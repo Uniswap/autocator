@@ -10,7 +10,7 @@ import {
   COMPACT_ABI,
   COMPACT_ADDRESS,
   isSupportedChain,
-  type BasicTransfer,
+  type AllocatedTransfer,
 } from '../constants/contracts';
 import { useNotification } from './useNotification';
 import {
@@ -81,9 +81,7 @@ export function useAllocatedWithdrawal() {
     });
 
   const allocatedWithdrawal = async (
-    transferParams: BasicTransfer & {
-      recipient: `0x${string}`;
-    },
+    transferPayload: AllocatedTransfer,
     tokenInfo?: TokenInfo
   ) => {
     if (!publicClient) throw new Error('Public client not available');
@@ -101,10 +99,16 @@ export function useAllocatedWithdrawal() {
     // Generate a temporary transaction ID for linking notifications
     const tempTxId = `pending-${Date.now()}`;
 
+    // Calculate total amount from recipients
+    const totalAmount = transferPayload.recipients.reduce(
+      (sum, recipient) => sum + recipient.amount,
+      BigInt(0)
+    );
+
     // Format the amount using the token's decimals and symbol if provided, otherwise use a generic format
     const displayAmount = tokenInfo
-      ? `${formatUnits(transferParams.amount, tokenInfo.decimals)} ${tokenInfo.symbol}`
-      : `${formatUnits(transferParams.amount, 18)} ETH`; // Default to ETH format
+      ? `${formatUnits(totalAmount, tokenInfo.decimals)} ${tokenInfo.symbol}`
+      : `${formatUnits(totalAmount, 18)} ETH`; // Default to ETH format
 
     try {
       // Submit the transaction with the server signature
@@ -118,13 +122,13 @@ export function useAllocatedWithdrawal() {
         autoHide: false,
       });
 
+      // For withdrawals, we need to encode the recipient with bytes12(0) as the lockTag
+      // The transferPayload recipients should already have the claimant field properly encoded
       const newHash = await writeContractAsync({
         address: COMPACT_ADDRESS as `0x${string}`,
-        abi: [
-          COMPACT_ABI.find((x) => x.name === 'allocatedWithdrawal'),
-        ] as const,
-        functionName: 'allocatedWithdrawal',
-        args: [transferParams],
+        abi: [COMPACT_ABI.find((x) => x.name === 'allocatedTransfer')] as const,
+        functionName: 'allocatedTransfer',
+        args: [transferPayload],
       });
 
       showNotification({

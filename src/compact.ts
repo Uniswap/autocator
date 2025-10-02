@@ -1,4 +1,5 @@
-import { FastifyInstance } from 'fastify';
+import type { FastifyInstance } from 'fastify';
+import './types/database.d.ts';
 import {
   type Hex,
   recoverAddress,

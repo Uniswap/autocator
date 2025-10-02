@@ -74,7 +74,8 @@ export async function setupCompactRoutes(
         const nonce = await generateNonce(
           normalizedAccount,
           chainId,
-          server.db
+          server.db,
+          process.env.ALLOCATOR_ADDRESS
         );
 
         // Return the nonce in hex format with 0x prefix

@@ -1,10 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from 'react';
-import {
-  useAccount,
-  useChainId,
-  useReadContract,
-  useSignTypedData,
-} from 'wagmi';
+import { useAccount, useChainId, useSignTypedData } from 'wagmi';
 import {
   parseUnits,
   isAddress,
@@ -15,8 +10,14 @@ import {
 import { useNotification } from '../hooks/useNotification';
 import { useAllocatedTransfer } from '../hooks/useAllocatedTransfer';
 import { useAllocatedWithdrawal } from '../hooks/useAllocatedWithdrawal';
-import { COMPACT_ADDRESS, COMPACT_ABI } from '../constants/contracts';
+import { useConsumedNonce } from '../hooks/useConsumedNonce';
+import { useAllocatorAPI } from '../hooks/useAllocatorAPI';
+import { COMPACT_ADDRESS } from '../constants/contracts';
 import { getChainName } from '../utils/chains';
+import {
+  encodeWithdrawalClaimant,
+  encodeTransferClaimant,
+} from '../utils/claimant';
 
 interface FormData {
   expires: string;
@@ -83,16 +84,15 @@ export function useTransfer(
   const [customExpiry, setCustomExpiry] = useState(false);
   const [expiryOption, setExpiryOption] = useState('10min');
 
-  // Check if nonce has been consumed
-  const { data: isNonceConsumed } = useReadContract({
-    address: COMPACT_ADDRESS as `0x${string}`,
-    abi: COMPACT_ABI,
-    functionName: 'hasConsumedAllocatorNonce',
-    args:
-      formData.nonce && address
-        ? [BigInt(formData.nonce), address as `0x${string}`]
-        : undefined,
-  });
+  // Get allocator address for nonce checking
+  const { allocatorAddress } = useAllocatorAPI();
+
+  // Check if nonce has been consumed using indexer
+  const { isConsumed: isNonceConsumed } = useConsumedNonce(
+    allocatorAddress || undefined,
+    targetChainId,
+    formData.nonce
+  );
 
   // Reset form state
   const resetForm = useCallback(() => {
@@ -561,14 +561,38 @@ export function useTransfer(
       }
 
       try {
-        // Convert values and prepare transfer struct
+        // Prepare the AllocatedTransfer struct with the new format
+        const amount = parseUnits(formData.amount, decimals);
+        const recipient = formData.recipient as `0x${string}`;
+
+        // For withdrawals, use bytes12(0) as the lockTag
+        // For transfers, extract the lockTag from the resource lock id
+        let claimant: bigint;
+        if (isWithdrawal) {
+          claimant = encodeWithdrawalClaimant(recipient);
+        } else {
+          // Extract lockTag from the resource lock id (first 12 bytes of the id)
+          // The id is constructed as: keccak256(abi.encodePacked(token, lockTag))
+          // For now, we'll use a simple approach - you may need to adjust based on your exact needs
+          const lockTagHex = ('0x' +
+            lockId
+              .toString(16)
+              .padStart(64, '0')
+              .slice(0, 24)) as `0x${string}`;
+          claimant = encodeTransferClaimant(lockTagHex, recipient);
+        }
+
         const transfer = {
-          allocatorSignature: formData.allocatorSignature as `0x${string}`,
+          allocatorData: formData.allocatorSignature as `0x${string}`,
           nonce: BigInt(formData.nonce!),
           expires: BigInt(formData.expires),
           id: lockId,
-          amount: parseUnits(formData.amount, decimals),
-          recipient: formData.recipient as `0x${string}`,
+          recipients: [
+            {
+              claimant,
+              amount,
+            },
+          ],
         };
 
         // Pass token information along with the transfer
@@ -586,12 +610,15 @@ export function useTransfer(
             nonce: transfer.nonce.toString(),
             expires: transfer.expires.toString(),
             id: transfer.id.toString(),
-            amount: transfer.amount.toString(),
+            recipients: transfer.recipients.map((r) => ({
+              claimant: r.claimant.toString(),
+              amount: r.amount.toString(),
+            })),
           },
           tokenInfo,
         });
 
-        // Submit transfer or withdrawal
+        // Submit transfer or withdrawal (both use allocatedTransfer now)
         if (isWithdrawal) {
           const hash = await allocatedWithdrawal(transfer, tokenInfo);
           if (hash) {
