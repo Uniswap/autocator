@@ -110,12 +110,14 @@ export async function generateValidCompactSignature(
     );
   } else {
     // Generate type hash with witness
+    // The witness typestring is appended as Mandate(witnessTypeString)
     const typeHash = keccak256(
       encodePacked(
         ['string'],
         [
-          'Compact(address arbiter,address sponsor,uint256 nonce,uint256 expires,uint256 id,uint256 amount,' +
-            compact.witnessTypeString,
+          'Compact(address arbiter,address sponsor,uint256 nonce,uint256 expires,uint256 id,uint256 amount,Mandate mandate)Mandate(' +
+            compact.witnessTypeString +
+            ')',
         ]
       )
     );
