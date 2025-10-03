@@ -36,7 +36,7 @@ export async function generateSignature(message: string): Promise<string> {
   return signature;
 }
 
-// EIP-712 domain for The Compact
+// EIP-712 domain for The Compact V1
 const DOMAIN = {
   name: 'The Compact',
   version: '1',
