@@ -421,7 +421,7 @@ export function useTransfer(
       // Create the EIP-712 payload
       const domain = {
         name: 'The Compact',
-        version: '0',
+        version: '1',
         chainId: BigInt(targetChainId),
         verifyingContract: COMPACT_ADDRESS as `0x${string}`,
       };
