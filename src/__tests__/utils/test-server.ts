@@ -39,8 +39,8 @@ export async function generateSignature(message: string): Promise<string> {
 // EIP-712 domain for The Compact
 const DOMAIN = {
   name: 'The Compact',
-  version: '0',
-  verifyingContract: '0x00000000000018DF021Ff2467dF97ff846E09f48',
+  version: '1',
+  verifyingContract: '0x00000000000000171ede64904551eeDF3C6C9788',
 } as const;
 
 // EIP-712 domain typehash
