@@ -11,11 +11,11 @@ import {
 import { privateKeyToAccount, sign } from 'viem/accounts';
 import { type StoredCompactMessage } from './compact';
 
-// EIP-712 domain for The Compact
+// EIP-712 domain for The Compact V1
 const DOMAIN = {
   name: 'The Compact',
-  version: '0',
-  verifyingContract: '0x00000000000018DF021Ff2467dF97ff846E09f48',
+  version: '1',
+  verifyingContract: '0x00000000000000171ede64904551eeDF3C6C9788',
 } as const;
 
 // EIP-712 domain typehash (for witness case)
