@@ -122,10 +122,9 @@ export async function validateBatchAllocation(
     for (const commitment of compact.commitments) {
       const lockId = buildLockId(commitment.token, commitment.lockTag);
 
-      // Extract allocatorId from lock tag
+      // Extract allocatorId from lock tag (bits 0-91)
       const allocatorId =
-        (BigInt(commitment.lockTag) >> BigInt(4)) &
-        ((BigInt(1) << BigInt(92)) - BigInt(1));
+        BigInt(commitment.lockTag) & ((BigInt(1) << BigInt(92)) - BigInt(1));
 
       // Verify allocatorId matches
       if (BigInt(chainConfig.allocatorId) !== allocatorId) {
@@ -238,10 +237,9 @@ export async function validateMultichainAllocation(
       for (const commitment of element.commitments) {
         const lockId = buildLockId(commitment.token, commitment.lockTag);
 
-        // Extract allocatorId from lock tag
+        // Extract allocatorId from lock tag (bits 0-91)
         const allocatorId =
-          (BigInt(commitment.lockTag) >> BigInt(4)) &
-          ((BigInt(1) << BigInt(92)) - BigInt(1));
+          BigInt(commitment.lockTag) & ((BigInt(1) << BigInt(92)) - BigInt(1));
 
         // Verify allocatorId matches
         if (BigInt(chainConfig.allocatorId) !== allocatorId) {
