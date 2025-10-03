@@ -101,6 +101,24 @@ export function setupGraphQLMocks(): void {
         },
       };
     }
+    // Handle CheckConsumedNonce query
+    if (
+      query.includes('CheckConsumedNonce') ||
+      query.includes('consumedNonce')
+    ) {
+      return {
+        consumedNonce: null, // Nonce not consumed
+      };
+    }
+    // Handle CheckOnchainRegistration query
+    if (
+      query.includes('CheckOnchainRegistration') ||
+      query.includes('registeredCompact')
+    ) {
+      return {
+        registeredCompact: null, // No onchain registration
+      };
+    }
     throw new Error(`Unhandled GraphQL query: ${query}`);
   };
 }
