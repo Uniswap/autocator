@@ -73,7 +73,7 @@
     "@typescript-eslint/eslint-plugin": "^8.17.0",
     "@typescript-eslint/parser": "^8.17.0",
     "concurrently": "^9.1.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.24.2",
     "eslint": "^8.57.1",
     "eslint-config-prettier": "^9.1.0",
     "husky": "^8.0.3",
@@ -81,7 +81,7 @@
     "lint-staged": "^15.2.10",
     "pino-pretty": "^13.0.0",
     "prettier": "^3.4.2",
-    "ts-jest": "^29.2.5",
+    "ts-jest": "^29.4.4",
     "ts-node": "^10.9.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
