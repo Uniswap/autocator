@@ -248,6 +248,10 @@ describe('Compact GraphQL Validation', () => {
   });
 
   it('should handle GraphQL request errors', async (): Promise<void> => {
+    // Suppress console.error for this test since we're intentionally triggering an error
+    const originalConsoleError = console.error;
+    console.error = (): void => {};
+
     graphqlClient.request = async (): Promise<never> => {
       throw new Error('GraphQL request failed');
     };
@@ -259,5 +263,8 @@ describe('Compact GraphQL Validation', () => {
     );
     expect(result.isValid).toBe(false);
     expect(result.error).toContain('GraphQL request failed');
+
+    // Restore console.error
+    console.error = originalConsoleError;
   });
 });

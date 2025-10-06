@@ -4,6 +4,7 @@ import {
   SupportedChainsResponse,
   AccountDeltasResponse,
   AccountResponse,
+  ConsumedNonceResponse,
 } from '../../../graphql';
 
 // Extract allocator ID from lockId (matches the calculation in balance.ts)
@@ -71,7 +72,11 @@ interface GraphQLDocument {
 type GraphQLRequestFn = (
   query: string | GraphQLDocument,
   variables?: Record<string, unknown>
-) => Promise<SupportedChainsResponse & AccountDeltasResponse & AccountResponse>;
+) => Promise<
+  | SupportedChainsResponse
+  | (AccountDeltasResponse & AccountResponse)
+  | ConsumedNonceResponse
+>;
 
 export function setupGraphQLMocks(): void {
   requestCallCount = 0;
@@ -79,10 +84,12 @@ export function setupGraphQLMocks(): void {
 
   // Override the request method of the GraphQL client
   (graphqlClient as { request: GraphQLRequestFn }).request = async (
-    _query: string | GraphQLDocument,
+    document: string | GraphQLDocument,
     _variables?: Record<string, unknown>
   ): Promise<
-    SupportedChainsResponse & AccountDeltasResponse & AccountResponse
+    | SupportedChainsResponse
+    | (AccountDeltasResponse & AccountResponse)
+    | ConsumedNonceResponse
   > => {
     requestCallCount++;
 
@@ -90,10 +97,55 @@ export function setupGraphQLMocks(): void {
       throw new Error('Network error');
     }
 
+    // Extract the query string from the document
+    const query = typeof document === 'string' ? document : document.source;
+
+    // Handle different query types based on query content
+    if (query.includes('CheckConsumedNonce')) {
+      // Return mock for consumed nonce query (nonce not consumed)
+      return {
+        consumedNonce: null,
+      };
+    }
+
+    if (query.includes('GetSupportedChains')) {
+      // Return mock for supported chains query only
+      return {
+        allocator: {
+          supportedChains: {
+            items: [{ chainId: '1', allocatorId: ALLOCATOR_ID }],
+          },
+        },
+      };
+    }
+
+    if (query.includes('GetDetails')) {
+      // Return mock for compact details query only
+      return {
+        accountDeltas: {
+          items: [],
+        },
+        account: {
+          resourceLocks: {
+            items: [
+              {
+                withdrawalStatus: 0,
+                balance: '1000000000000000000000', // 1000 ETH
+              },
+            ],
+          },
+          claims: {
+            items: [],
+          },
+        },
+      };
+    }
+
+    // Default: return combined mock for generic queries (for backward compatibility with tests)
     return {
       allocator: {
         supportedChains: {
-          items: [{ chainId: '1', allocatorId: ALLOCATOR_ID }], // Match the test compact ID
+          items: [{ chainId: '1', allocatorId: ALLOCATOR_ID }],
         },
       },
       accountDeltas: {
