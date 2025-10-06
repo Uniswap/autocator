@@ -1,13 +1,7 @@
 import { graphqlClient } from '../../graphql';
 
-// Extract allocator ID from lockId (matches the calculation in balance.ts)
-const TEST_LOCK_ID = BigInt(
-  '0x7000000000000000000000010000000000000000000000000000000000000000'
-);
-const ALLOCATOR_ID = (
-  (TEST_LOCK_ID >> BigInt(160)) &
-  ((BigInt(1) << BigInt(92)) - BigInt(1))
-).toString();
+// Use allocatorId = 1 to match tests
+const ALLOCATOR_ID = '1';
 
 // Mock response for supported chains query
 const mockSupportedChainsResponse = {
@@ -99,6 +93,24 @@ export function setupGraphQLMocks(): void {
             items: [],
           },
         },
+      };
+    }
+    // Handle CheckConsumedNonce query
+    if (
+      query.includes('CheckConsumedNonce') ||
+      query.includes('consumedNonce')
+    ) {
+      return {
+        consumedNonce: null, // Nonce not consumed
+      };
+    }
+    // Handle CheckOnchainRegistration query
+    if (
+      query.includes('CheckOnchainRegistration') ||
+      query.includes('registeredCompact')
+    ) {
+      return {
+        registeredCompact: null, // No onchain registration
       };
     }
     throw new Error(`Unhandled GraphQL query: ${query}`);

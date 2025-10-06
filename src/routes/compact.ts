@@ -7,7 +7,11 @@ import {
   type CompactSubmission,
   type StoredCompactMessage,
 } from '../compact';
-import { generateNonce } from '../validation';
+import {
+  generateNonce,
+  validateCompact,
+  type CompactMessage,
+} from '../validation';
 
 // Type for serialized response
 interface SerializedCompactMessage {
@@ -74,7 +78,8 @@ export async function setupCompactRoutes(
         const nonce = await generateNonce(
           normalizedAccount,
           chainId,
-          server.db
+          server.db,
+          process.env.ALLOCATOR_ADDRESS
         );
 
         // Return the nonce in hex format with 0x prefix
@@ -227,6 +232,62 @@ export async function setupCompactRoutes(
         return {
           error:
             error instanceof Error ? error.message : 'Failed to get compact',
+        };
+      }
+    }
+  );
+
+  // Check if a compact is allocatable (validates structure and fund availability)
+  server.post<{
+    Body: {
+      chainId: string;
+      compact: CompactMessage;
+    };
+  }>(
+    '/compact/is-allocatable',
+    async (
+      request: FastifyRequest<{
+        Body: {
+          chainId: string;
+          compact: CompactMessage;
+        };
+      }>,
+      reply: FastifyReply
+    ) => {
+      try {
+        const { chainId, compact } = request.body;
+
+        // Validate the compact including allocation availability
+        const validationResult = await validateCompact(
+          compact,
+          chainId,
+          server.db
+        );
+
+        if (!validationResult.isValid) {
+          reply.code(400);
+          return {
+            isAllocatable: false,
+            error: validationResult.error,
+          };
+        }
+
+        // Return success with validated compact details
+        return {
+          isAllocatable: true,
+          validatedCompact: validationResult.validatedCompact
+            ? serializeCompactMessage(validationResult.validatedCompact)
+            : null,
+          message: 'Compact is valid and funds are available for allocation',
+        };
+      } catch (error) {
+        reply.code(500);
+        return {
+          isAllocatable: false,
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to check allocatability',
         };
       }
     }

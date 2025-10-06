@@ -27,10 +27,3 @@ export async function setupDatabase(server: FastifyInstance): Promise<void> {
     await db.close();
   });
 }
-
-// Add TypeScript declaration
-declare module 'fastify' {
-  interface FastifyInstance {
-    db: PGlite;
-  }
-}

@@ -1,13 +1,5 @@
-import { GraphQLClient } from 'graphql-request';
+import { graphqlClient } from '../graphql';
 import { getFinalizationThreshold } from '../chain-config';
-
-// GraphQL endpoint from environment
-const INDEXER_ENDPOINT = process.env.INDEXER_URL
-  ? `${process.env.INDEXER_URL.replace(/\/$/, '')}/graphql`
-  : 'http://localhost:4000/graphql';
-
-// Create a GraphQL client
-const graphqlClient = new GraphQLClient(INDEXER_ENDPOINT);
 
 // Define the types for our GraphQL responses
 export interface RegisteredCompactResponse {

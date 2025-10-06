@@ -36,11 +36,11 @@ export async function generateSignature(message: string): Promise<string> {
   return signature;
 }
 
-// EIP-712 domain for The Compact
+// EIP-712 domain for The Compact V1
 const DOMAIN = {
   name: 'The Compact',
-  version: '0',
-  verifyingContract: '0x00000000000018DF021Ff2467dF97ff846E09f48',
+  version: '1',
+  verifyingContract: '0x00000000000000171ede64904551eeDF3C6C9788',
 } as const;
 
 // EIP-712 domain typehash
@@ -110,12 +110,14 @@ export async function generateValidCompactSignature(
     );
   } else {
     // Generate type hash with witness
+    // The witness typestring is appended as Mandate(witnessTypeString)
     const typeHash = keccak256(
       encodePacked(
         ['string'],
         [
-          'Compact(address arbiter,address sponsor,uint256 nonce,uint256 expires,uint256 id,uint256 amount,' +
-            compact.witnessTypeString,
+          'Compact(address arbiter,address sponsor,uint256 nonce,uint256 expires,uint256 id,uint256 amount,Mandate mandate)Mandate(' +
+            compact.witnessTypeString +
+            ')',
         ]
       )
     );

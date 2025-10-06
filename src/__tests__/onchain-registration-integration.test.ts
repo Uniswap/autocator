@@ -7,20 +7,20 @@ import {
   cleanupTestServer,
 } from './utils/test-server';
 import { submitCompact } from '../compact';
-import { GraphQLClient } from 'graphql-request';
 import { RequestDocument, RequestOptions } from 'graphql-request';
 import { dbManager } from './setup';
+import { graphqlClient } from '../graphql';
 
 describe('Onchain Registration Integration', () => {
   let server: FastifyInstance;
-  let originalGraphQLRequest: typeof GraphQLClient.prototype.request;
+  let originalGraphQLRequest: typeof graphqlClient.request;
 
   beforeEach(async () => {
     // Create the test server (this will initialize the database)
     server = await createTestServer();
 
-    // Store original GraphQL request method
-    originalGraphQLRequest = GraphQLClient.prototype.request;
+    // Store original GraphQL request method from the singleton
+    originalGraphQLRequest = graphqlClient.request.bind(graphqlClient);
 
     // Ensure the nonces table exists and has the necessary structure
     const db = await dbManager.getDb();
@@ -43,8 +43,8 @@ describe('Onchain Registration Integration', () => {
   });
 
   afterEach(async () => {
-    // Restore original GraphQL request method
-    GraphQLClient.prototype.request = originalGraphQLRequest;
+    // Restore original GraphQL request method on the singleton
+    graphqlClient.request = originalGraphQLRequest;
     await cleanupTestServer();
   });
 
@@ -60,6 +60,56 @@ describe('Onchain Registration Integration', () => {
       freshCompact,
       chainId
     );
+
+    // Mock GraphQL responses (needed even with valid signature as fallback)
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
+      ..._variablesAndRequestHeaders: unknown[]
+    ): Promise<T> => {
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check (should not be reached with valid signature)
+      if (
+        query.includes('GetRegisteredCompact') ||
+        query.includes('registeredCompact')
+      ) {
+        return {
+          registeredCompact: null, // No onchain registration
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
+    };
 
     // Submit the compact
     const result = await submitCompact(
@@ -87,27 +137,64 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Get current time in seconds
-      const currentTime = Math.floor(Date.now() / 1000);
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
 
-      // Return a valid active registration (finalized and not expired)
-      return {
-        registeredCompact: {
-          blockNumber: '10030370',
-          timestamp: (currentTime - 3600).toString(), // 1 hour ago (finalized)
-          typehash:
-            '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
-          expires: (currentTime + 3600).toString(), // Expires in 1 hour (not expired)
-          sponsor: {
-            address: sponsorAddress.toLowerCase(),
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
           },
-          claim: null,
-        },
-      } as T;
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Get current time in seconds
+        const currentTime = Math.floor(Date.now() / 1000);
+
+        // Return a valid active registration (finalized and not expired)
+        return {
+          registeredCompact: {
+            blockNumber: '10030370',
+            timestamp: (currentTime - 3600).toString(), // 1 hour ago (finalized)
+            typehash:
+              '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
+            expires: (currentTime + 3600).toString(), // Expires in 1 hour (not expired)
+            sponsor: {
+              address: sponsorAddress.toLowerCase(),
+            },
+            claim: null,
+          },
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
@@ -136,14 +223,51 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Return null for registeredCompact (not found)
-      return {
-        registeredCompact: null,
-      } as T;
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Return null for registeredCompact (not found)
+        return {
+          registeredCompact: null,
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
@@ -171,27 +295,64 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Get current time in seconds
-      const currentTime = Math.floor(Date.now() / 1000);
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
 
-      // Return a registration with a timestamp that's very recent (not yet finalized)
-      return {
-        registeredCompact: {
-          blockNumber: '10030370',
-          timestamp: (currentTime - 5).toString(), // 5 seconds ago
-          typehash:
-            '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
-          expires: '1740779269',
-          sponsor: {
-            address: sponsorAddress.toLowerCase(),
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
           },
-          claim: null,
-        },
-      } as T;
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Get current time in seconds
+        const currentTime = Math.floor(Date.now() / 1000);
+
+        // Return a registration with a timestamp that's very recent (not yet finalized)
+        return {
+          registeredCompact: {
+            blockNumber: '10030370',
+            timestamp: (currentTime - 5).toString(), // 5 seconds ago
+            typehash:
+              '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
+            expires: '1740779269',
+            sponsor: {
+              address: sponsorAddress.toLowerCase(),
+            },
+            claim: null,
+          },
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
@@ -217,27 +378,64 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Get current time in seconds
-      const currentTime = Math.floor(Date.now() / 1000);
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
 
-      // Return a registration with an expired timestamp
-      return {
-        registeredCompact: {
-          blockNumber: '10030370',
-          timestamp: (currentTime - 3600).toString(), // 1 hour ago
-          typehash:
-            '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
-          expires: (currentTime - 60).toString(), // Expired 1 minute ago
-          sponsor: {
-            address: sponsorAddress.toLowerCase(),
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
           },
-          claim: null,
-        },
-      } as T;
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Get current time in seconds
+        const currentTime = Math.floor(Date.now() / 1000);
+
+        // Return a registration with an expired timestamp
+        return {
+          registeredCompact: {
+            blockNumber: '10030370',
+            timestamp: (currentTime - 3600).toString(), // 1 hour ago
+            typehash:
+              '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
+            expires: (currentTime - 60).toString(), // Expired 1 minute ago
+            sponsor: {
+              address: sponsorAddress.toLowerCase(),
+            },
+            claim: null,
+          },
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
@@ -263,30 +461,67 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Get current time in seconds
-      const currentTime = Math.floor(Date.now() / 1000);
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
 
-      // Return a registration with a claim that's already finalized
-      return {
-        registeredCompact: {
-          blockNumber: '10030370',
-          timestamp: (currentTime - 3600).toString(), // 1 hour ago
-          typehash:
-            '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
-          expires: (currentTime + 3600).toString(), // Expires in 1 hour
-          sponsor: {
-            address: sponsorAddress.toLowerCase(),
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
           },
-          claim: {
-            blockNumber: '10030433',
-            timestamp: (currentTime - 3500).toString(), // 58 minutes ago
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Get current time in seconds
+        const currentTime = Math.floor(Date.now() / 1000);
+
+        // Return a registration with a claim that's already finalized
+        return {
+          registeredCompact: {
+            blockNumber: '10030370',
+            timestamp: (currentTime - 3600).toString(), // 1 hour ago
+            typehash:
+              '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
+            expires: (currentTime + 3600).toString(), // Expires in 1 hour
+            sponsor: {
+              address: sponsorAddress.toLowerCase(),
+            },
+            claim: {
+              blockNumber: '10030433',
+              timestamp: (currentTime - 3500).toString(), // 58 minutes ago
+            },
           },
-        },
-      } as T;
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
@@ -312,27 +547,64 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
-      _document: RequestDocument | RequestOptions,
+    graphqlClient.request = async <T>(
+      document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
-      // Get current time in seconds
-      const currentTime = Math.floor(Date.now() / 1000);
+      let query = '';
+      if (typeof document === 'string') {
+        query = document;
+      } else if ('document' in document) {
+        query = document.document?.toString() || '';
+      } else {
+        query = document.toString();
+      }
 
-      // Return a registration with a different sponsor
-      return {
-        registeredCompact: {
-          blockNumber: '10030370',
-          timestamp: (currentTime - 3600).toString(), // 1 hour ago
-          typehash:
-            '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
-          expires: (currentTime + 3600).toString(), // Expires in 1 hour
-          sponsor: {
-            address: '0x1234567890123456789012345678901234567890', // Different sponsor
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
           },
-          claim: null,
-        },
-      } as T;
+        } as T;
+      }
+
+      // Handle nonce consumption check
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return {
+          consumedNonce: null, // Nonce not consumed
+        } as T;
+      }
+
+      // Handle onchain registration check
+      if (query.includes('registeredCompact')) {
+        // Get current time in seconds
+        const currentTime = Math.floor(Date.now() / 1000);
+
+        // Return a registration with a different sponsor
+        return {
+          registeredCompact: {
+            blockNumber: '10030370',
+            timestamp: (currentTime - 3600).toString(), // 1 hour ago
+            typehash:
+              '0x27f09e0bb8ce2ae63380578af7af85055d3ada248c502e2378b85bc3d05ee0b0',
+            expires: (currentTime + 3600).toString(), // Expires in 1 hour
+            sponsor: {
+              address: '0x1234567890123456789012345678901234567890', // Different sponsor
+            },
+            claim: null,
+          },
+        } as T;
+      }
+
+      throw new Error(`Unhandled GraphQL query: ${query}`);
     };
 
     // Submit the compact with invalid signature
