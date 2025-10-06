@@ -12,10 +12,10 @@ importers:
         specifier: ^0.2.14
         version: 0.2.14
       '@fastify/cors':
-        specifier: ^8.4.1
+        specifier: ^8.5.0
         version: 8.5.0
       '@fastify/env':
-        specifier: ^4.3.0
+        specifier: ^4.4.0
         version: 4.4.0
       '@fastify/static':
         specifier: ^6.12.0
@@ -24,7 +24,7 @@ importers:
         specifier: ^16.4.7
         version: 16.4.7
       fastify:
-        specifier: ^4.24.3
+        specifier: ^4.28.1
         version: 4.28.1
       graphql:
         specifier: ^16.9.0
@@ -43,7 +43,7 @@ importers:
         specifier: ^29.5.14
         version: 29.5.14
       '@types/node':
-        specifier: ^20.9.1
+        specifier: ^20.17.9
         version: 20.17.9
       '@typescript-eslint/eslint-plugin':
         specifier: ^8.17.0
@@ -58,7 +58,7 @@ importers:
         specifier: ^0.24.0
         version: 0.24.0
       eslint:
-        specifier: ^8.56.0
+        specifier: ^8.57.1
         version: 8.57.1
       eslint-config-prettier:
         specifier: ^9.1.0
