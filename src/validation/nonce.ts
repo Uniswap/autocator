@@ -175,8 +175,21 @@ export async function validateNonce(
 
     // Extract high and low parts from fragment
     const fragmentBigInt = BigInt('0x' + fragmentPart);
-    const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-    const nonceHigh = Number(fragmentBigInt >> BigInt(32));
+    const nonceLowUnsigned = fragmentBigInt & BigInt(0xffffffff);
+    const nonceHighUnsigned = fragmentBigInt >> BigInt(32);
+
+    // Convert unsigned values to signed for PostgreSQL storage
+    // PostgreSQL integer: -2^31 to 2^31-1, so values >= 2^31 become negative
+    // PostgreSQL bigint: -2^63 to 2^63-1, so values >= 2^63 become negative
+    const nonceLow =
+      nonceLowUnsigned >= BigInt(0x80000000)
+        ? Number(nonceLowUnsigned - BigInt(0x100000000))
+        : Number(nonceLowUnsigned);
+
+    const nonceHigh =
+      nonceHighUnsigned >= BigInt('0x8000000000000000')
+        ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
+        : Number(nonceHighUnsigned);
 
     // Check if nonce has been used before in this domain
     const result = await db.query<{ count: number }>(
@@ -235,8 +248,21 @@ export async function storeNonce(
 
   // Extract high and low parts from fragment
   const fragmentBigInt = BigInt('0x' + fragmentPart);
-  const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-  const nonceHigh = Number(fragmentBigInt >> BigInt(32));
+  const nonceLowUnsigned = fragmentBigInt & BigInt(0xffffffff);
+  const nonceHighUnsigned = fragmentBigInt >> BigInt(32);
+
+  // Convert unsigned values to signed for PostgreSQL storage
+  // PostgreSQL integer: -2^31 to 2^31-1, so values >= 2^31 become negative
+  // PostgreSQL bigint: -2^63 to 2^63-1, so values >= 2^63 become negative
+  const nonceLow =
+    nonceLowUnsigned >= BigInt(0x80000000)
+      ? Number(nonceLowUnsigned - BigInt(0x100000000))
+      : Number(nonceLowUnsigned);
+
+  const nonceHigh =
+    nonceHighUnsigned >= BigInt('0x8000000000000000')
+      ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
+      : Number(nonceHighUnsigned);
 
   // Lock the nonces table for this sponsor and chain before inserting
   await db.query(

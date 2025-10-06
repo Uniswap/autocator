@@ -7,20 +7,20 @@ import {
   cleanupTestServer,
 } from './utils/test-server';
 import { submitCompact } from '../compact';
-import { GraphQLClient } from 'graphql-request';
 import { RequestDocument, RequestOptions } from 'graphql-request';
 import { dbManager } from './setup';
+import { graphqlClient } from '../graphql';
 
 describe('Onchain Registration Integration', () => {
   let server: FastifyInstance;
-  let originalGraphQLRequest: typeof GraphQLClient.prototype.request;
+  let originalGraphQLRequest: typeof graphqlClient.request;
 
   beforeEach(async () => {
     // Create the test server (this will initialize the database)
     server = await createTestServer();
 
-    // Store original GraphQL request method
-    originalGraphQLRequest = GraphQLClient.prototype.request;
+    // Store original GraphQL request method from the singleton
+    originalGraphQLRequest = graphqlClient.request.bind(graphqlClient);
 
     // Ensure the nonces table exists and has the necessary structure
     const db = await dbManager.getDb();
@@ -43,8 +43,8 @@ describe('Onchain Registration Integration', () => {
   });
 
   afterEach(async () => {
-    // Restore original GraphQL request method
-    GraphQLClient.prototype.request = originalGraphQLRequest;
+    // Restore original GraphQL request method on the singleton
+    graphqlClient.request = originalGraphQLRequest;
     await cleanupTestServer();
   });
 
@@ -62,7 +62,7 @@ describe('Onchain Registration Integration', () => {
     );
 
     // Mock GraphQL responses (needed even with valid signature as fallback)
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -73,6 +73,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -87,7 +100,7 @@ describe('Onchain Registration Integration', () => {
 
       // Handle onchain registration check (should not be reached with valid signature)
       if (
-        query.includes('CheckOnchainRegistration') ||
+        query.includes('GetRegisteredCompact') ||
         query.includes('registeredCompact')
       ) {
         return {
@@ -124,7 +137,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -135,6 +148,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -197,7 +223,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -208,6 +234,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -256,7 +295,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -267,6 +306,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -326,7 +378,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -337,6 +389,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -396,7 +461,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -407,6 +472,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
@@ -469,7 +547,7 @@ describe('Onchain Registration Integration', () => {
       '0x1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890';
 
     // Mock GraphQL response for onchain registration check
-    GraphQLClient.prototype.request = async <T>(
+    graphqlClient.request = async <T>(
       document: RequestDocument | RequestOptions,
       ..._variablesAndRequestHeaders: unknown[]
     ): Promise<T> => {
@@ -480,6 +558,19 @@ describe('Onchain Registration Integration', () => {
         query = document.document?.toString() || '';
       } else {
         query = document.toString();
+      }
+
+      // Handle allocation validation query
+      if (query.includes('GetDetails') || query.includes('accountDeltas')) {
+        return {
+          accountDeltas: { items: [] },
+          account: {
+            resourceLocks: {
+              items: [{ withdrawalStatus: 0, balance: '10000000000000000000' }],
+            }, // 10 ETH
+            claims: { items: [] },
+          },
+        } as T;
       }
 
       // Handle nonce consumption check
