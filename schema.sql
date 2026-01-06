@@ -58,6 +58,8 @@ CREATE TABLE nonces (
     sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
     nonce_high bigint NOT NULL,
     nonce_low integer NOT NULL,
+    -- Command type for HybridAllocator nonces (1=ON_CHAIN, 2=OFF_CHAIN, 3=PERMIT2)
+    nonce_command INTEGER CHECK (nonce_command IS NULL OR nonce_command IN (1, 2, 3)),
     consumed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(chain_id, sponsor, nonce_high, nonce_low)
 );
