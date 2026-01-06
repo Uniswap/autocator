@@ -13,6 +13,14 @@ import { unichain } from '../config/wagmi';
 export const COMPACT_ADDRESS =
   '0x00000000000000171ede64904551eeDF3C6C9788' as const;
 
+// HybridAllocator is deployed at the same address on all networks
+export const HYBRID_ALLOCATOR_ADDRESS =
+  '0xa110cE8BFD2Bb33fd7dB4804f9b8736fE4d05A4B' as const;
+
+// Tribunal arbiter is deployed at the same address on all networks
+export const TRIBUNAL_ADDRESS =
+  '0x000000000000790009689f43bAedb61D67D45bB8' as const;
+
 // Chain configurations
 export const SUPPORTED_CHAINS = {
   [mainnet.id]: {
@@ -229,6 +237,66 @@ export const ERC20_ABI = [
     ],
     name: 'approve',
     outputs: [{ name: '', type: 'bool' }],
+    type: 'function',
+  },
+] as const;
+
+// HybridAllocator ABI (key functions)
+export const HYBRID_ALLOCATOR_ABI = [
+  // View allocator ID (immutable per chain)
+  {
+    inputs: [],
+    name: 'ALLOCATOR_ID',
+    outputs: [{ name: '', type: 'uint96' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  // Check if an address is an authorized signer
+  {
+    inputs: [{ name: 'signer', type: 'address' }],
+    name: 'signers',
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  // Allocate and register (on-chain allocation)
+  {
+    inputs: [
+      { name: 'recipient', type: 'address' },
+      { name: 'idsAndAmounts', type: 'uint256[2][]' },
+      { name: 'arbiter', type: 'address' },
+      { name: 'expires', type: 'uint256' },
+      { name: 'typehash', type: 'bytes32' },
+      { name: 'witness', type: 'bytes32' },
+    ],
+    name: 'allocateAndRegister',
+    outputs: [
+      { name: 'claimHash', type: 'bytes32' },
+      { name: 'ids', type: 'uint256[]' },
+      { name: 'nonce', type: 'uint256' },
+    ],
+    stateMutability: 'payable',
+    type: 'function',
+  },
+  // Authorize attestation for transfers
+  {
+    inputs: [
+      { name: 'from', type: 'address' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'expires', type: 'uint256' },
+      { name: 'idsAndAmounts', type: 'uint256[2][]' },
+    ],
+    name: 'authorizeAttestation',
+    outputs: [{ name: '', type: 'bytes32' }],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Check attested transfer
+  {
+    inputs: [{ name: 'attestationHash', type: 'bytes32' }],
+    name: 'attestations',
+    outputs: [{ name: 'expires', type: 'uint256' }],
+    stateMutability: 'view',
     type: 'function',
   },
 ] as const;

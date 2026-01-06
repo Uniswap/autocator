@@ -5,6 +5,27 @@ export enum CompactCategory {
   MultichainCompact = 2,
 }
 
+// Enum for nonce command types (HybridAllocator)
+// The command byte is the first byte of the 32-byte nonce
+export enum NonceCommand {
+  ON_CHAIN = 0x01, // Nonce used for on-chain allocation
+  OFF_CHAIN = 0x02, // Nonce used for off-chain (allocator-signed) allocation
+  PERMIT2 = 0x03, // Nonce used for Permit2-based allocation
+}
+
+// Parsed nonce structure for HybridAllocator
+export interface ParsedNonce {
+  command: NonceCommand;
+  sponsor: string; // 20-byte address
+  fragment: bigint; // 11-byte nonce fragment
+}
+
+// Hybrid allocation context for off-chain authorization
+export interface HybridAllocationContext {
+  nonce: bigint;
+  signature: string;
+}
+
 // Interface for incoming compact messages (from API)
 export interface CompactMessage {
   arbiter: string;
