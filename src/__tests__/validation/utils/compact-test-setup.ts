@@ -19,23 +19,45 @@ const ALLOCATOR_ID = (
 export async function setupCompactTestDb(): Promise<PGlite> {
   const db = new PGlite();
 
-  // Create test tables with bytea columns
+  // Create test tables using the new normalized schema
   await db.query(`
     CREATE TABLE IF NOT EXISTS compacts (
       id UUID PRIMARY KEY,
       chain_id bigint NOT NULL,
       claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
-      arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+      compact_type INTEGER NOT NULL DEFAULT 0 CHECK (compact_type IN (0, 1, 2)),
       sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
       nonce bytea NOT NULL CHECK (length(nonce) = 32),
       expires BIGINT NOT NULL,
-      lock_id bytea NOT NULL CHECK (length(lock_id) = 32),
-      amount bytea NOT NULL CHECK (length(amount) = 32),
+      signature bytea NOT NULL,
       witness_type_string TEXT,
       witness_hash bytea CHECK (witness_hash IS NULL OR length(witness_hash) = 32),
-      signature bytea NOT NULL,
       created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(chain_id, claim_hash)
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS compact_elements (
+      id UUID PRIMARY KEY,
+      compact_id UUID NOT NULL REFERENCES compacts(id) ON DELETE CASCADE,
+      element_index INTEGER NOT NULL DEFAULT 0,
+      arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+      chain_id bigint NOT NULL,
+      mandate_hash bytea CHECK (mandate_hash IS NULL OR length(mandate_hash) = 32),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(compact_id, element_index)
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS compact_commitments (
+      id UUID PRIMARY KEY,
+      element_id UUID NOT NULL REFERENCES compact_elements(id) ON DELETE CASCADE,
+      lock_tag bytea NOT NULL CHECK (length(lock_tag) = 12),
+      token bytea NOT NULL CHECK (length(token) = 20),
+      amount bytea NOT NULL CHECK (length(amount) = 32),
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
@@ -54,11 +76,12 @@ export async function setupCompactTestDb(): Promise<PGlite> {
   return db;
 }
 
-export function cleanupCompactTestDb(db: PGlite): Promise<void> {
-  return Promise.all([
-    db.query('DROP TABLE IF EXISTS compacts'),
-    db.query('DROP TABLE IF EXISTS nonces'),
-  ]).then(() => undefined);
+export async function cleanupCompactTestDb(db: PGlite): Promise<void> {
+  // Drop in order due to foreign key constraints
+  await db.query('DROP TABLE IF EXISTS compact_commitments');
+  await db.query('DROP TABLE IF EXISTS compact_elements');
+  await db.query('DROP TABLE IF EXISTS compacts');
+  await db.query('DROP TABLE IF EXISTS nonces');
 }
 
 // Track request calls

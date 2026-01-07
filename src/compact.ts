@@ -43,7 +43,7 @@ export interface StoredCompactMessage {
 }
 
 export interface CompactRecord {
-  chainId: string;
+  chainId: number;
   compact: StoredCompactMessage;
   hash: string;
   signature: string;
@@ -81,6 +81,38 @@ function amountToBytes(amount: string | bigint): Uint8Array {
 function bytesToAmount(bytes: Uint8Array): string {
   const hex = toHex(bytes);
   return BigInt(hex).toString();
+}
+
+// Helper to extract lock_tag from legacy compact ID
+// Legacy ID structure (32 bytes = 256 bits):
+// - bits 0-159: token address (160 bits)
+// - bits 160-251: lock identifier parts (allocatorId, resetPeriod)
+// - bits 252-255: scope
+// Lock tag (12 bytes = 96 bits): allocatorId (92 bits) | resetPeriod (3 bits) | scope (1 bit)
+function extractLockTagAndToken(id: bigint): {
+  lockTag: Uint8Array;
+  token: Uint8Array;
+} {
+  // Extract token (lower 160 bits)
+  const tokenMask = (BigInt(1) << BigInt(160)) - BigInt(1);
+  const tokenBigInt = id & tokenMask;
+  const tokenHex = tokenBigInt.toString(16).padStart(40, '0');
+  const token = hexToBuffer(`0x${tokenHex}`);
+
+  // Extract lock_tag (bits 160-255, 96 bits = 12 bytes)
+  // The upper 96 bits of the id form the lock identifier
+  const lockTagBigInt = id >> BigInt(160);
+  const lockTagHex = lockTagBigInt.toString(16).padStart(24, '0');
+  const lockTag = hexToBuffer(`0x${lockTagHex}`);
+
+  return { lockTag, token };
+}
+
+// Helper to reconstruct ID from lock_tag and token
+function reconstructId(lockTag: Uint8Array, token: Uint8Array): bigint {
+  const lockTagBigInt = BigInt(bufferToHex(lockTag));
+  const tokenBigInt = BigInt(bufferToHex(token));
+  return (lockTagBigInt << BigInt(160)) | tokenBigInt;
 }
 
 // Helper to convert ValidatedCompactMessage to StoredCompactMessage
@@ -292,39 +324,44 @@ export async function getCompactsByAddress(
   server: FastifyInstance,
   address: string
 ): Promise<CompactRecord[]> {
+  // Query using the new normalized schema structure
   const result = await server.db.query<{
-    chainId: string;
-    arbiter: Uint8Array;
+    chain_id: string;
     sponsor: Uint8Array;
     nonce: Uint8Array;
     expires: string;
-    amount: Uint8Array;
-    lock_id: Uint8Array;
-    hash: Uint8Array;
+    claim_hash: Uint8Array;
     signature: Uint8Array;
-    createdAt: string;
+    created_at: string;
+    arbiter: Uint8Array;
+    lock_tag: Uint8Array;
+    token: Uint8Array;
+    amount: Uint8Array;
   }>(
     `SELECT 
-      chain_id as "chainId",
-      arbiter,
-      sponsor,
-      nonce,
-      expires,
-      amount,
-      lock_id,
-      claim_hash as hash,
-      signature,
-      created_at as "createdAt"
-    FROM compacts 
-    WHERE sponsor = $1 
-    ORDER BY created_at DESC`,
+      c.chain_id,
+      c.sponsor,
+      c.nonce,
+      c.expires,
+      c.claim_hash,
+      c.signature,
+      c.created_at,
+      e.arbiter,
+      cc.lock_tag,
+      cc.token,
+      cc.amount
+    FROM compacts c
+    JOIN compact_elements e ON e.compact_id = c.id
+    JOIN compact_commitments cc ON cc.element_id = e.id
+    WHERE c.sponsor = $1 AND c.compact_type = 0
+    ORDER BY c.created_at DESC`,
     [addressToBytes(address)]
   );
 
   return result.rows.map((row) => ({
-    chainId: row.chainId,
+    chainId: parseInt(row.chain_id, 10),
     compact: {
-      id: BigInt(bufferToHex(row.lock_id)),
+      id: reconstructId(row.lock_tag, row.token),
       arbiter: byteaToAddress(row.arbiter),
       sponsor: byteaToAddress(row.sponsor),
       nonce: BigInt(bufferToHex(row.nonce)),
@@ -333,9 +370,9 @@ export async function getCompactsByAddress(
       witnessTypeString: null,
       witnessHash: null,
     },
-    hash: bufferToHex(row.hash),
+    hash: bufferToHex(row.claim_hash),
     signature: bufferToHex(row.signature),
-    createdAt: row.createdAt,
+    createdAt: row.created_at,
   }));
 }
 
@@ -344,31 +381,36 @@ export async function getCompactByHash(
   chainId: string,
   claimHash: string
 ): Promise<CompactRecord | null> {
+  // Query using the new normalized schema structure
   const result = await server.db.query<{
-    chainId: string;
-    arbiter: Uint8Array;
+    chain_id: string;
     sponsor: Uint8Array;
     nonce: Uint8Array;
     expires: string;
-    amount: Uint8Array;
-    lock_id: Uint8Array;
-    hash: Uint8Array;
+    claim_hash: Uint8Array;
     signature: Uint8Array;
-    createdAt: string;
+    created_at: string;
+    arbiter: Uint8Array;
+    lock_tag: Uint8Array;
+    token: Uint8Array;
+    amount: Uint8Array;
   }>(
     `SELECT 
-      chain_id as "chainId",
-      arbiter,
-      sponsor,
-      nonce,
-      expires,
-      amount,
-      lock_id,
-      claim_hash as hash,
-      signature,
-      created_at as "createdAt"
-    FROM compacts 
-    WHERE chain_id = $1 AND claim_hash = $2`,
+      c.chain_id,
+      c.sponsor,
+      c.nonce,
+      c.expires,
+      c.claim_hash,
+      c.signature,
+      c.created_at,
+      e.arbiter,
+      cc.lock_tag,
+      cc.token,
+      cc.amount
+    FROM compacts c
+    JOIN compact_elements e ON e.compact_id = c.id
+    JOIN compact_commitments cc ON cc.element_id = e.id
+    WHERE c.chain_id = $1 AND c.claim_hash = $2 AND c.compact_type = 0`,
     [chainId, hexToBuffer(claimHash)]
   );
 
@@ -378,9 +420,9 @@ export async function getCompactByHash(
 
   const row = result.rows[0];
   return {
-    chainId: row.chainId,
+    chainId: parseInt(row.chain_id, 10),
     compact: {
-      id: BigInt(bufferToHex(row.lock_id)),
+      id: reconstructId(row.lock_tag, row.token),
       arbiter: byteaToAddress(row.arbiter),
       sponsor: byteaToAddress(row.sponsor),
       nonce: BigInt(bufferToHex(row.nonce)),
@@ -389,9 +431,9 @@ export async function getCompactByHash(
       witnessTypeString: null,
       witnessHash: null,
     },
-    hash: bufferToHex(row.hash),
+    hash: bufferToHex(row.claim_hash),
     signature: bufferToHex(row.signature),
-    createdAt: row.createdAt,
+    createdAt: row.created_at,
   };
 }
 
@@ -402,37 +444,75 @@ async function storeCompact(
   hash: Hex,
   signature: Hex
 ): Promise<void> {
-  const id = randomUUID();
+  const compactId = randomUUID();
+  const elementId = randomUUID();
+  const commitmentId = randomUUID();
 
   // Convert nonce to hex string preserving all 32 bytes
   const nonceHex = compact.nonce.toString(16).padStart(64, '0');
   const nonceBytes = hexToBuffer(nonceHex);
 
+  // Extract lock_tag and token from the legacy ID
+  const { lockTag, token } = extractLockTagAndToken(compact.id);
+
+  // Insert into compacts table (compact_type = 0 for legacy Compact)
   await db.query(
     `INSERT INTO compacts (
       id,
       chain_id,
       claim_hash,
-      arbiter,
+      compact_type,
       sponsor,
       nonce,
       expires,
-      lock_id,
-      amount,
       signature,
+      witness_type_string,
+      witness_hash,
       created_at
     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)`,
     [
-      id,
+      compactId,
       chainId,
       hexToBuffer(hash),
-      addressToBytes(compact.arbiter),
+      0, // compact_type = 0 for legacy Compact
       addressToBytes(compact.sponsor),
       nonceBytes,
       compact.expires.toString(),
-      hexToBuffer(numberToHex(compact.id, { size: 32 })),
-      amountToBytes(compact.amount),
       hexToBuffer(signature),
+      compact.witnessTypeString,
+      compact.witnessHash ? hexToBuffer(compact.witnessHash) : null,
     ]
+  );
+
+  // Insert into compact_elements table (arbiter and chain)
+  await db.query(
+    `INSERT INTO compact_elements (
+      id,
+      compact_id,
+      element_index,
+      arbiter,
+      chain_id,
+      created_at
+    ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
+    [
+      elementId,
+      compactId,
+      0, // Single element for legacy Compact
+      addressToBytes(compact.arbiter),
+      chainId,
+    ]
+  );
+
+  // Insert into compact_commitments table (lock_tag, token, amount)
+  await db.query(
+    `INSERT INTO compact_commitments (
+      id,
+      element_id,
+      lock_tag,
+      token,
+      amount,
+      created_at
+    ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
+    [commitmentId, elementId, lockTag, token, amountToBytes(compact.amount)]
   );
 }

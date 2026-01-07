@@ -1,4 +1,8 @@
-import { graphqlClient } from '../../graphql';
+import {
+  graphqlClient,
+  hybridAllocatorClient,
+  resetIndexerHealthCache,
+} from '../../graphql';
 
 // Use allocatorId = 1 to match tests
 const ALLOCATOR_ID = '1';
@@ -56,19 +60,25 @@ const mockAccountDeltasResponse = {
 
 // Track request calls
 let requestCallCount = 0;
+let hybridRequestCallCount = 0;
 let shouldFail = false;
+let shouldHybridFail = false;
 
 // Setup GraphQL mocks
 export function setupGraphQLMocks(): void {
   requestCallCount = 0;
+  hybridRequestCallCount = 0;
   shouldFail = false;
+  shouldHybridFail = false;
+  // Reset the health cache to ensure fresh state for each test
+  resetIndexerHealthCache();
 
   type GraphQLRequestFn = (
     query: string,
     variables?: Record<string, unknown>
   ) => Promise<unknown>;
 
-  // Override the request method of the GraphQL client
+  // Override the request method of the main GraphQL client (compact indexer)
   (graphqlClient as { request: GraphQLRequestFn }).request = async (
     query: string,
     _variables?: Record<string, unknown>
@@ -113,7 +123,51 @@ export function setupGraphQLMocks(): void {
         registeredCompact: null, // No onchain registration
       };
     }
+    // Handle health check query
+    if (query.includes('HealthCheck') || query.includes('__typename')) {
+      return { __typename: 'Query' };
+    }
     throw new Error(`Unhandled GraphQL query: ${query}`);
+  };
+
+  // Override the request method of the hybrid allocator GraphQL client
+  (hybridAllocatorClient as { request: GraphQLRequestFn }).request = async (
+    query: string,
+    _variables?: Record<string, unknown>
+  ) => {
+    hybridRequestCallCount++;
+
+    if (shouldHybridFail) {
+      throw new Error('Hybrid allocator indexer network error');
+    }
+
+    // Handle health check query
+    if (query.includes('HealthCheck') || query.includes('__typename')) {
+      return { __typename: 'Query' };
+    }
+    // Handle GetAllocation query
+    if (query.includes('GetAllocation')) {
+      return { allocation: null }; // No existing allocation by default
+    }
+    // Handle GetAllocations query
+    if (query.includes('GetAllocations')) {
+      return { allocations: { items: [] } };
+    }
+    // Handle GetActiveSigners query
+    if (query.includes('GetActiveSigners')) {
+      return { signers: { items: [] } };
+    }
+    // Handle GetAllocatorInstance query
+    if (query.includes('GetAllocatorInstance')) {
+      return {
+        allocatorInstance: {
+          allocatorId: ALLOCATOR_ID,
+          ownerAddress: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+          compactAddress: '0x00000000000000171ede64904551eeDF3C6C9788',
+        },
+      };
+    }
+    throw new Error(`Unhandled hybrid allocator GraphQL query: ${query}`);
   };
 }
 
@@ -122,9 +176,31 @@ export function getRequestCallCount(): number {
   return requestCallCount;
 }
 
-// Set the mock to fail on next request
+// Get the number of times hybrid allocator request was called
+export function getHybridRequestCallCount(): number {
+  return hybridRequestCallCount;
+}
+
+// Set the compact indexer mock to fail
 export function setMockToFail(fail: boolean = true): void {
   shouldFail = fail;
+  // Reset the health cache so the next health check picks up the new state
+  resetIndexerHealthCache();
+}
+
+// Set the hybrid allocator indexer mock to fail
+export function setHybridMockToFail(fail: boolean = true): void {
+  shouldHybridFail = fail;
+  // Reset the health cache so the next health check picks up the new state
+  resetIndexerHealthCache();
+}
+
+// Set both indexers to fail (for testing fail-closed behavior)
+export function setBothIndexersToFail(fail: boolean = true): void {
+  shouldFail = fail;
+  shouldHybridFail = fail;
+  // Reset the health cache so the next health check picks up the new state
+  resetIndexerHealthCache();
 }
 
 // Export mock responses for assertions

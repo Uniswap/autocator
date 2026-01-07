@@ -99,10 +99,18 @@ describe('Compact Routes', () => {
       expect(result).toHaveProperty('nonce');
       expect(result.nonce).toMatch(/^0x[0-9a-f]{64}$/i);
 
-      // Verify nonce format: first 20 bytes should match sponsor address
+      // Verify hybrid nonce format:
+      // - Byte 0 (hex chars 0-1): command (0x02 = OFF_CHAIN)
+      // - Bytes 1-20 (hex chars 2-41): sponsor address
+      // - Bytes 21-31 (hex chars 42-63): fragment
       const nonceHex = BigInt(result.nonce).toString(16).padStart(64, '0');
+
+      // First byte should be 0x02 (OFF_CHAIN command)
+      expect(nonceHex.slice(0, 2)).toBe('02');
+
+      // Bytes 1-20 should match sponsor address
       const sponsorHex = sponsorAddress.toLowerCase().slice(2);
-      expect(nonceHex.slice(0, 40)).toBe(sponsorHex);
+      expect(nonceHex.slice(2, 42)).toBe(sponsorHex);
     });
 
     it('should reject request with invalid account address', async () => {
@@ -363,12 +371,27 @@ describe('Compact Routes', () => {
       expect(response.statusCode).toBe(200);
       const result = JSON.parse(response.payload);
 
-      // Extract nonce components
+      // Extract nonce components from hybrid nonce format:
+      // - Byte 0 (hex chars 0-1): command
+      // - Bytes 1-20 (hex chars 2-41): sponsor
+      // - Bytes 21-31 (hex chars 42-63): fragment (11 bytes = 88 bits)
       const nonceHex = BigInt(result.nonce).toString(16).padStart(64, '0');
-      const fragmentPart = nonceHex.slice(40); // last 12 bytes (24 hex chars)
+      const fragmentPart = nonceHex.slice(42); // bytes 21-31 = 11 bytes = 22 hex chars
       const fragmentBigInt = BigInt('0x' + fragmentPart);
-      const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-      const nonceHigh = Number(fragmentBigInt >> BigInt(32));
+
+      // Split fragment into nonce_high and nonce_low for database lookup
+      const nonceLowUnsigned = fragmentBigInt & BigInt(0xffffffff);
+      const nonceHighUnsigned = fragmentBigInt >> BigInt(32);
+
+      // Convert to signed for PostgreSQL storage
+      const nonceLow =
+        nonceLowUnsigned >= BigInt(0x80000000)
+          ? Number(nonceLowUnsigned - BigInt(0x100000000))
+          : Number(nonceLowUnsigned);
+      const nonceHigh =
+        nonceHighUnsigned >= BigInt('0x8000000000000000')
+          ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
+          : Number(nonceHighUnsigned);
 
       // Verify nonce was stored with correct high and low values
       const dbResult = await server.db.query<{ count: number }>(

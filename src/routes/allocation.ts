@@ -13,6 +13,7 @@ import {
   validateBatchCompact,
   validateArbiter,
   validateHybridNonce,
+  parseHybridNonce,
   constructHybridNonce,
   NonceCommand,
   type BatchCompactMessage,
@@ -242,12 +243,27 @@ async function storeAllocation(
       );
     }
 
-    // Store the nonce as used
-    const nonceHigh = compact.nonce >> BigInt(32);
-    const nonceLow = Number(compact.nonce & BigInt(0xffffffff));
+    // Parse the hybrid nonce to extract components
+    const parsedNonce = parseHybridNonce(compact.nonce);
 
-    // Extract command from nonce for nonce_command column
-    const nonceCommand = Number((compact.nonce >> BigInt(248)) & BigInt(0xff));
+    // Split fragment into high/low parts for database storage
+    // Fragment is 88 bits (11 bytes), we store lower 32 bits in nonce_low, rest in nonce_high
+    const nonceLowUnsigned = parsedNonce.fragment & BigInt(0xffffffff);
+    const nonceHighUnsigned = parsedNonce.fragment >> BigInt(32);
+
+    // Convert unsigned values to signed for PostgreSQL storage
+    const nonceLow =
+      nonceLowUnsigned >= BigInt(0x80000000)
+        ? Number(nonceLowUnsigned - BigInt(0x100000000))
+        : Number(nonceLowUnsigned);
+
+    const nonceHigh =
+      nonceHighUnsigned >= BigInt('0x8000000000000000')
+        ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
+        : Number(nonceHighUnsigned);
+
+    // Use the command from the parsed nonce
+    const nonceCommand = parsedNonce.command;
 
     await db.query(
       `INSERT INTO nonces (
@@ -471,7 +487,9 @@ export async function setupAllocationRoutes(
         if (
           error instanceof Error &&
           (error.message.includes('Invalid') ||
-            error.message.includes('Insufficient'))
+            error.message.includes('Insufficient') ||
+            error.message.includes('mismatch') ||
+            error.message.includes('not in the allowed list'))
         ) {
           reply.code(400);
           return { error: error.message };

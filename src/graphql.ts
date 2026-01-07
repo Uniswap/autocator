@@ -600,8 +600,8 @@ async function checkCompactIndexerHealth(): Promise<boolean> {
   try {
     await graphqlClient.request(HEALTH_CHECK_QUERY);
     return true;
-  } catch (error) {
-    console.error('Compact indexer health check failed:', error);
+  } catch {
+    // Silently return false on health check failure - the caller will handle appropriately
     return false;
   }
 }
@@ -613,8 +613,8 @@ async function checkHybridAllocatorIndexerHealth(): Promise<boolean> {
   try {
     await hybridAllocatorClient.request(HEALTH_CHECK_QUERY);
     return true;
-  } catch (error) {
-    console.error('Hybrid allocator indexer health check failed:', error);
+  } catch {
+    // Silently return false on health check failure - the caller will handle appropriately
     return false;
   }
 }
@@ -644,4 +644,15 @@ export async function ensureIndexersHealthy(): Promise<void> {
  */
 export function getIndexerHealthStatus(): IndexerHealthStatus {
   return { ...indexerHealthStatus };
+}
+
+/**
+ * Reset the indexer health cache (for testing purposes)
+ */
+export function resetIndexerHealthCache(): void {
+  indexerHealthStatus = {
+    compactIndexer: true,
+    hybridAllocatorIndexer: true,
+    lastCheck: 0,
+  };
 }

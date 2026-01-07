@@ -59,21 +59,20 @@ describe('Compact Test Setup', () => {
     it('should enforce bytea length constraints on compacts table', async () => {
       db = await setupCompactTestDb();
 
-      // Attempt to insert with invalid claim_hash length
+      // Attempt to insert with invalid claim_hash length (2 bytes, should fail 32-byte check)
       await expect(
         db.query(
           `
         INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
+          id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature
         ) VALUES (
-          'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, $2, $2, $1, 1234567890,
-          $1, $1, $3
+          'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, 0, $2, $3, 1234567890, $4
         )
       `,
           [
             hexToBytes('0x1234' as `0x${string}`), // 2 bytes, should fail claim_hash 32-byte check
-            hexToBytes(('0x' + '1234567890'.repeat(4)) as `0x${string}`), // 20 bytes for arbiter/sponsor
+            hexToBytes(('0x' + '1234567890'.repeat(4)) as `0x${string}`), // 20 bytes for sponsor
+            hexToBytes(('0x' + '12'.repeat(32)) as `0x${string}`), // 32 bytes for nonce
             hexToBytes(('0x' + '12'.repeat(65)) as `0x${string}`), // 65 bytes for signature
           ]
         )
@@ -104,23 +103,20 @@ describe('Compact Test Setup', () => {
       db = await setupCompactTestDb();
 
       const claimHash = hexToBytes(('0x' + '12'.repeat(32)) as `0x${string}`);
-      const arbiter = hexToBytes(('0x' + '12'.repeat(20)) as `0x${string}`);
-      const lockId = hexToBytes(('0x' + '12'.repeat(32)) as `0x${string}`);
-      const amount = hexToBytes(('0x' + '12'.repeat(32)) as `0x${string}`);
+      const sponsor = hexToBytes(('0x' + '12'.repeat(20)) as `0x${string}`);
+      const nonce = hexToBytes(('0x' + '12'.repeat(32)) as `0x${string}`);
       const signature = hexToBytes(('0x' + '12'.repeat(65)) as `0x${string}`);
 
       // First insert should succeed
       await db.query(
         `
         INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
+          id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature
         ) VALUES (
-          'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, $2, $2, $1, 1234567890,
-          $3, $4, $5
+          'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, 0, $2, $3, 1234567890, $4
         )
       `,
-        [claimHash, arbiter, lockId, amount, signature]
+        [claimHash, sponsor, nonce, signature]
       );
 
       // Second insert with same chain_id and claim_hash should fail
@@ -128,14 +124,12 @@ describe('Compact Test Setup', () => {
         db.query(
           `
         INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
+          id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature
         ) VALUES (
-          'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, $2, $2, $1, 1234567890,
-          $3, $4, $5
+          'b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 1, $1, 0, $2, $3, 1234567890, $4
         )
       `,
-          [claimHash, arbiter, lockId, amount, signature]
+          [claimHash, sponsor, nonce, signature]
         )
       ).rejects.toThrow();
     });

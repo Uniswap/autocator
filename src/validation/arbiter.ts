@@ -42,7 +42,7 @@ export function initializeAllowedArbiters(arbitersEnv?: string): void {
         try {
           return getAddress(a).toLowerCase();
         } catch {
-          console.warn(`Invalid arbiter address: ${a}`);
+          // Silently ignore invalid arbiter addresses
           return null;
         }
       })

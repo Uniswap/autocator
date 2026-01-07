@@ -613,11 +613,15 @@ describe('Compact Storage and Retrieval', () => {
 
       // Use default ID from getFreshCompact() - we're testing nonce handling, not ID validation
 
-      // Use a large counter value in the nonce
-      const sponsorAddress = compact.sponsor.toLowerCase();
-      const sponsorBigInt = BigInt('0x' + sponsorAddress.slice(2));
-      const largeCounter = BigInt('0xFFFFFFFFFFFF'); // 48 bits, well within range
-      compact.nonce = (sponsorBigInt << BigInt(96)) | largeCounter;
+      // Use a large fragment value in the hybrid nonce
+      // Hybrid nonce: command (1 byte) + sponsor (20 bytes) + fragment (11 bytes)
+      const sponsorBigInt = BigInt(compact.sponsor);
+      const command = BigInt(0x02); // OFF_CHAIN
+      const largeFragment = BigInt('0xFFFFFFFFFFF'); // 44 bits, well within 88-bit fragment range
+      compact.nonce =
+        (command << BigInt(248)) |
+        (sponsorBigInt << BigInt(88)) |
+        largeFragment;
 
       const compactData = compactToAPI(compact);
       const signature = await generateValidCompactSignature(
@@ -648,24 +652,20 @@ describe('Compact Storage and Retrieval', () => {
       expect(retrieved!.compact.nonce).toBe(compact.nonce);
     });
 
-    it('should handle nonces with full uint256 range values', async () => {
+    it('should handle nonces with high fragment values in hybrid format', async () => {
       const compact = getFreshCompact();
 
-      // Use a nonce with values that would overflow if treated as signed integers
-      // Example: 0xff001122334455667788990011223344556677889900112233445566778899ff
-      // Split: sponsor (20 bytes) + fragment (12 bytes)
-      // We'll construct a nonce where the fragment has high values
-      const sponsorAddress = compact.sponsor.toLowerCase();
-      const sponsorBigInt = BigInt('0x' + sponsorAddress.slice(2));
+      // Use a hybrid nonce with high fragment values that would overflow if treated as signed integers
+      // Hybrid nonce: command (1 byte) + sponsor (20 bytes) + fragment (11 bytes)
+      const sponsorBigInt = BigInt(compact.sponsor);
+      const command = BigInt(0x02); // OFF_CHAIN
 
       // Fragment with high bit values (this will test unsigned vs signed handling)
-      // High 8 bytes: 0x9900112233445566 = 11025984847301887334 (> 2^63-1)
-      // Low 4 bytes: 0x77889900 = 2005678336 (< 2^31-1 so this part is ok)
-      const fragmentHigh = BigInt('0x9900112233445566');
-      const fragmentLow = BigInt('0x77889900');
-      const fragment = (fragmentHigh << BigInt(32)) | fragmentLow;
+      // 88-bit fragment with high bits set
+      const fragment = BigInt('0xFFFFFFFFFFFFFFFFFF'); // 72 bits of 1s, within 88-bit range
 
-      compact.nonce = (sponsorBigInt << BigInt(96)) | fragment;
+      compact.nonce =
+        (command << BigInt(248)) | (sponsorBigInt << BigInt(88)) | fragment;
 
       const compactData = compactToAPI(compact);
       const signature = await generateValidCompactSignature(
@@ -702,76 +702,40 @@ describe('Compact Storage and Retrieval', () => {
       expect(retrievedNonceHex).toBe(originalNonceHex);
     });
 
-    it('should handle the exact nonce example: 0xff001122334455667788990011223344556677889900112233445566778899ff', async () => {
+    it('should handle hybrid nonce with maximum fragment value', async () => {
       const compact = getFreshCompact();
 
-      // Use the exact nonce example: 0xff001122334455667788990011223344556677889900112233445566778899ff
-      // Sponsor part (20 bytes): 0xff0011223344556677889900112233445566778899
-      // Fragment part (12 bytes): 0x00112233445566778899ff
-      const exampleNonce = BigInt(
-        '0xff001122334455667788990011223344556677889900112233445566778899ff'
-      );
-      const exampleSponsor = '0xFF00112233445566778899001122334455667788';
+      // Create a hybrid nonce with maximum fragment value (11 bytes = 88 bits max)
+      // Hybrid nonce: command (1 byte) + sponsor (20 bytes) + fragment (11 bytes)
+      const command = BigInt(0x02); // OFF_CHAIN
+      const sponsorBigInt = BigInt(compact.sponsor);
+      // Maximum 88-bit fragment value: 2^88 - 1
+      const maxFragment = (BigInt(1) << BigInt(88)) - BigInt(1);
 
-      compact.sponsor = exampleSponsor;
-      compact.arbiter = exampleSponsor;
+      const exampleNonce =
+        (command << BigInt(248)) | (sponsorBigInt << BigInt(88)) | maxFragment;
       compact.nonce = exampleNonce;
 
-      // Mock onchain registration to accept this compact since we don't have the private key
-      // for this sponsor address
-      const originalGraphQL = graphqlClient.request;
-      graphqlClient.request = async (...args: unknown[]): Promise<unknown> => {
-        const query =
-          typeof args[0] === 'string'
-            ? args[0]
-            : (args[0] as { document?: string }).document || '';
-        // If querying for registered compact, return ACTIVE status
-        if (
-          query.includes('registeredCompact') ||
-          query.includes('GetRegisteredCompact')
-        ) {
-          return {
-            registeredCompact: {
-              blockNumber: '1000000',
-              timestamp: '1000000',
-              typehash:
-                '0x0000000000000000000000000000000000000000000000000000000000000001',
-              expires: (BigInt(compact.expires) + BigInt(1000)).toString(),
-              sponsor: {
-                address: exampleSponsor,
-              },
-              claim: null,
-            },
-          };
-        }
-        // Default mock response for other queries
-        return {
-          accountDeltas: { items: [] },
-          account: {
-            resourceLocks: {
-              items: [
-                {
-                  withdrawalStatus: 0,
-                  balance: '1000000000000000000000',
-                },
-              ],
-            },
-            claims: { items: [] },
-          },
-        };
-      };
-
       const compactData = compactToAPI(compact);
-
-      // Use a dummy signature since we're relying on onchain registration
-      const dummySignature =
-        '0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000';
+      const signature = await generateValidCompactSignature(
+        {
+          id: compact.id,
+          arbiter: compact.arbiter,
+          sponsor: compact.sponsor,
+          nonce: compact.nonce,
+          expires: compact.expires,
+          amount: compact.amount,
+          witnessTypeString: compact.witnessTypeString,
+          witnessHash: compact.witnessHash,
+        },
+        '1'
+      );
 
       const submitResult = await submitCompact(
         server,
         { chainId: '1', compact: compactData },
         compact.sponsor,
-        dummySignature
+        signature
       );
 
       const retrieved = await getCompactByHash(server, '1', submitResult.hash);
@@ -779,15 +743,12 @@ describe('Compact Storage and Retrieval', () => {
       expect(retrieved).not.toBeNull();
       expect(retrieved!.compact.nonce).toBe(exampleNonce);
 
-      // Verify the exact nonce value round-trips correctly
+      // Verify the nonce value round-trips correctly
       const retrievedNonceHex =
         '0x' + retrieved!.compact.nonce.toString(16).padStart(64, '0');
-      expect(retrievedNonceHex).toBe(
-        '0xff001122334455667788990011223344556677889900112233445566778899ff'
-      );
-
-      // Restore original graphQL
-      graphqlClient.request = originalGraphQL;
+      const originalNonceHex =
+        '0x' + exampleNonce.toString(16).padStart(64, '0');
+      expect(retrievedNonceHex).toBe(originalNonceHex);
     });
   });
 });

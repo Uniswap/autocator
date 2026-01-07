@@ -106,6 +106,9 @@ describe('Integration Tests', () => {
       expect(initialNonceResponse.statusCode).toBe(200);
       const { nonce: initialNonce } = JSON.parse(initialNonceResponse.payload);
 
+      // Use the suggested nonce in the compact so it gets consumed
+      freshCompact.nonce = BigInt(initialNonce);
+
       // 2. Submit compact
       const compactData = compactToAPI(freshCompact);
       const storedCompact = apiCompactToStoredCompact(compactData);
@@ -129,23 +132,26 @@ describe('Integration Tests', () => {
       const submitResult = JSON.parse(submitResponse.payload);
       expect(submitResult).toHaveProperty('hash');
 
-      // Query compacts table
+      // Query compacts table with normalized schema
       await server.db.query(`
         SELECT 
-          id::text,
-          chain_id,
-          encode(claim_hash, 'hex') as claim_hash,
-          encode(arbiter, 'hex') as arbiter,
-          encode(sponsor, 'hex') as sponsor,
-          encode(nonce, 'hex') as nonce,
-          expires,
-          encode(lock_id, 'hex') as lock_id,
-          encode(amount, 'hex') as amount,
-          witness_type_string,
-          encode(witness_hash, 'hex') as witness_hash,
-          encode(signature, 'hex') as signature,
-          created_at
-        FROM compacts
+          c.id::text,
+          c.chain_id,
+          encode(c.claim_hash, 'hex') as claim_hash,
+          encode(c.sponsor, 'hex') as sponsor,
+          encode(c.nonce, 'hex') as nonce,
+          c.expires,
+          encode(ce.arbiter, 'hex') as arbiter,
+          encode(cc.lock_tag, 'hex') as lock_tag,
+          encode(cc.token, 'hex') as token,
+          encode(cc.amount, 'hex') as amount,
+          c.witness_type_string,
+          encode(c.witness_hash, 'hex') as witness_hash,
+          encode(c.signature, 'hex') as signature,
+          c.created_at
+        FROM compacts c
+        LEFT JOIN compact_elements ce ON ce.compact_id = c.id
+        LEFT JOIN compact_commitments cc ON cc.element_id = ce.id
       `);
 
       // 3. Verify updated balance
