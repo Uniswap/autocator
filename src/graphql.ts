@@ -514,23 +514,24 @@ export async function getHybridAllocation(
 }
 
 /**
- * Get all allocations for a sponsor from the hybrid allocator indexer
+ * Get all allocations for a sponsor from the hybrid allocator indexer.
+ *
+ * IMPORTANT: This function throws on error to ensure fail-closed behavior.
+ * The allocator must NEVER issue allocations if on-chain state cannot be verified.
+ *
+ * @throws Error if allocations cannot be fetched
  */
 export async function getHybridAllocationsForSponsor(
   sponsor: string,
   chainId: string
 ): Promise<HybridAllocationsResponse['allocations']['items']> {
-  try {
-    const response =
-      await hybridAllocatorClient.request<HybridAllocationsResponse>(
-        GET_ALLOCATIONS_FOR_SPONSOR,
-        { sponsor: sponsor.toLowerCase(), chainId }
-      );
-    return response.allocations.items;
-  } catch (error) {
-    console.error('Error fetching hybrid allocations for sponsor:', error);
-    return [];
-  }
+  // Let errors propagate (fail-closed)
+  const response =
+    await hybridAllocatorClient.request<HybridAllocationsResponse>(
+      GET_ALLOCATIONS_FOR_SPONSOR,
+      { sponsor: sponsor.toLowerCase(), chainId }
+    );
+  return response.allocations.items;
 }
 
 /**
@@ -549,6 +550,100 @@ export async function getActiveSigners(): Promise<string[]> {
     console.error('Error fetching active signers:', error);
     return [];
   }
+}
+
+// Lock interface for parsing commitments JSON
+interface Lock {
+  lockTag: string;
+  token: string;
+  amount: string;
+}
+
+/**
+ * Get on-chain allocated balance for a specific sponsor and lockId from the hybrid allocator indexer.
+ * This sums up all allocation amounts that:
+ * 1. Match the sponsor address
+ * 2. Match the lockId (lockTag + token combination)
+ * 3. Haven't expired yet
+ * 4. Are not in the processed claims list
+ *
+ * IMPORTANT: This function throws on error to prevent over-allocation.
+ * The allocator must NEVER issue allocations if on-chain state cannot be verified.
+ *
+ * @param sponsor - The sponsor address
+ * @param chainId - The chain ID
+ * @param lockId - The lock ID (lockTag << 160 | token)
+ * @param processedClaimHashes - List of claim hashes that have already been processed
+ * @returns Total on-chain allocated balance for the lockId
+ * @throws Error if on-chain allocations cannot be fetched
+ */
+export async function getOnChainAllocatedBalance(
+  sponsor: string,
+  chainId: string,
+  lockId: bigint,
+  processedClaimHashes: string[]
+): Promise<bigint> {
+  // Fetch allocations - let errors propagate (fail-closed)
+  const allocations = await getHybridAllocationsForSponsor(sponsor, chainId);
+
+  if (allocations.length === 0) {
+    return BigInt(0);
+  }
+
+  const currentTimeSeconds = BigInt(Math.floor(Date.now() / 1000));
+
+  // Convert processed claim hashes to lowercase for comparison
+  const processedClaimsSet = new Set(
+    processedClaimHashes.map((h) => h.toLowerCase())
+  );
+
+  // Extract lockTag and token from lockId for comparison
+  // Lock ID = (lockTag << 160) | token
+  const tokenMask = (BigInt(1) << BigInt(160)) - BigInt(1);
+  const targetToken = lockId & tokenMask;
+  const targetLockTag = lockId >> BigInt(160);
+
+  let totalAllocated = BigInt(0);
+
+  for (const allocation of allocations) {
+    // Skip expired allocations
+    if (BigInt(allocation.expires) <= currentTimeSeconds) {
+      continue;
+    }
+
+    // Skip already processed claims
+    if (processedClaimsSet.has(allocation.claimHash.toLowerCase())) {
+      continue;
+    }
+
+    // Parse commitments JSON - fail-closed on parse errors
+    let commitments: Lock[];
+    try {
+      commitments = JSON.parse(allocation.commitments) as Lock[];
+    } catch (parseError) {
+      // If we can't parse commitments, we can't safely determine allocation amounts
+      // Fail-closed to prevent potential over-allocation
+      throw new Error(
+        `Failed to parse commitments for allocation ${allocation.claimHash}: ` +
+          `${parseError instanceof Error ? parseError.message : String(parseError)}`
+      );
+    }
+
+    for (const commitment of commitments) {
+      // Normalize and compare lockTag and token
+      const commitmentLockTag = BigInt(commitment.lockTag);
+      const commitmentToken = BigInt(commitment.token);
+
+      if (
+        commitmentLockTag === targetLockTag &&
+        commitmentToken === targetToken
+      ) {
+        totalAllocated += BigInt(commitment.amount);
+      }
+    }
+  }
+
+  return totalAllocated;
 }
 
 /**

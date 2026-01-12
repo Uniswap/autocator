@@ -64,12 +64,23 @@ let hybridRequestCallCount = 0;
 let shouldFail = false;
 let shouldHybridFail = false;
 
+// Mock on-chain allocations for testing
+interface MockOnChainAllocation {
+  claimHash: string;
+  nonce: string;
+  expires: string;
+  commitments: string; // JSON string
+  timestamp: string;
+}
+let mockOnChainAllocations: MockOnChainAllocation[] = [];
+
 // Setup GraphQL mocks
 export function setupGraphQLMocks(): void {
   requestCallCount = 0;
   hybridRequestCallCount = 0;
   shouldFail = false;
   shouldHybridFail = false;
+  mockOnChainAllocations = [];
   // Reset the health cache to ensure fresh state for each test
   resetIndexerHealthCache();
 
@@ -145,13 +156,14 @@ export function setupGraphQLMocks(): void {
     if (query.includes('HealthCheck') || query.includes('__typename')) {
       return { __typename: 'Query' };
     }
-    // Handle GetAllocation query
+    // Handle GetAllocations query - returns mock on-chain allocations
+    // NOTE: Must check before GetAllocation since "GetAllocation" is a substring of "GetAllocations"
+    if (query.includes('GetAllocations')) {
+      return { allocations: { items: mockOnChainAllocations } };
+    }
+    // Handle GetAllocation query (single allocation by claim hash)
     if (query.includes('GetAllocation')) {
       return { allocation: null }; // No existing allocation by default
-    }
-    // Handle GetAllocations query
-    if (query.includes('GetAllocations')) {
-      return { allocations: { items: [] } };
     }
     // Handle GetActiveSigners query
     if (query.includes('GetActiveSigners')) {
@@ -201,6 +213,31 @@ export function setBothIndexersToFail(fail: boolean = true): void {
   shouldHybridFail = fail;
   // Reset the health cache so the next health check picks up the new state
   resetIndexerHealthCache();
+}
+
+/**
+ * Set mock on-chain allocations for testing.
+ * These will be returned by the GetAllocations query.
+ *
+ * @param allocations - Array of mock allocations with commitments as JSON string
+ */
+export function setMockOnChainAllocations(
+  allocations: Array<{
+    claimHash: string;
+    nonce: string;
+    expires: string;
+    commitments: string; // JSON string of Lock[]
+    timestamp: string;
+  }>
+): void {
+  mockOnChainAllocations = allocations;
+}
+
+/**
+ * Clear mock on-chain allocations
+ */
+export function clearMockOnChainAllocations(): void {
+  mockOnChainAllocations = [];
 }
 
 // Export mock responses for assertions
