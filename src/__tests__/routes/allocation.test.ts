@@ -472,8 +472,8 @@ describe('Allocation Routes', () => {
     });
 
     describe('Indexer health checks (fail-closed)', () => {
-      it('should return 503 when compact indexer is down', async () => {
-        // Make the compact indexer fail
+      it('should return 503 when unified indexer is down', async () => {
+        // Make the unified indexer fail
         setMockToFail(true);
 
         const freshCompact = getFreshBatchCompact();
@@ -496,11 +496,12 @@ describe('Allocation Routes', () => {
         expect(response.statusCode).toBe(503);
         const result = JSON.parse(response.payload);
         expect(result.error).toContain('Service temporarily unavailable');
-        expect(result.error).toContain('compact-indexer');
+        expect(result.error).toContain('unified-compact-indexer');
       });
 
-      it('should return 503 when hybrid allocator indexer is down', async () => {
-        // Make the hybrid allocator indexer fail
+      it('should return 503 via setHybridMockToFail (legacy compatibility)', async () => {
+        // Legacy function - now both setMockToFail and setHybridMockToFail
+        // affect the same unified indexer
         setHybridMockToFail(true);
 
         const freshCompact = getFreshBatchCompact();
@@ -523,7 +524,7 @@ describe('Allocation Routes', () => {
         expect(response.statusCode).toBe(503);
         const result = JSON.parse(response.payload);
         expect(result.error).toContain('Service temporarily unavailable');
-        expect(result.error).toContain('hybrid-allocator-indexer');
+        expect(result.error).toContain('unified-compact-indexer');
       });
     });
 

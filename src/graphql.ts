@@ -2,32 +2,22 @@ import { GraphQLClient } from 'graphql-request';
 import { FastifyInstance } from 'fastify';
 import { getFinalizationThreshold } from './chain-config';
 
-// GraphQL endpoints from environment
-const COMPACT_INDEXER_ENDPOINT = process.env.INDEXER_URL
+// GraphQL endpoint from environment - uses unified indexer for all queries
+const INDEXER_ENDPOINT = process.env.INDEXER_URL
   ? `${process.env.INDEXER_URL.replace(/\/$/, '')}/graphql`
-  : 'https://the-compact-v1-indexer.marble.live/graphql';
+  : 'https://unified-compact-indexer.marble.live/graphql';
 
-const HYBRID_ALLOCATOR_INDEXER_ENDPOINT = process.env
-  .HYBRID_ALLOCATOR_INDEXER_URL
-  ? `${process.env.HYBRID_ALLOCATOR_INDEXER_URL.replace(/\/$/, '')}/graphql`
-  : 'https://hybrid-allocator-indexer.marble.live/graphql';
-
-// Create singleton GraphQL clients
-export const graphqlClient = new GraphQLClient(COMPACT_INDEXER_ENDPOINT);
-export const hybridAllocatorClient = new GraphQLClient(
-  HYBRID_ALLOCATOR_INDEXER_ENDPOINT
-);
+// Create singleton GraphQL client for unified indexer
+export const graphqlClient = new GraphQLClient(INDEXER_ENDPOINT);
 
 // Indexer health status
 interface IndexerHealthStatus {
-  compactIndexer: boolean;
-  hybridAllocatorIndexer: boolean;
+  indexer: boolean;
   lastCheck: number;
 }
 
 let indexerHealthStatus: IndexerHealthStatus = {
-  compactIndexer: false,
-  hybridAllocatorIndexer: false,
+  indexer: false,
   lastCheck: 0,
 };
 
@@ -390,10 +380,10 @@ export function processCompactDetails(
 }
 
 // ============================================================
-// Hybrid Allocator Indexer Integration
+// Hybrid Allocator Integration (via Unified Indexer)
 // ============================================================
 
-// Response types for hybrid allocator indexer
+// Response types for hybrid allocator data
 export interface HybridAllocationResponse {
   allocation: {
     claimHash: string;
@@ -494,18 +484,17 @@ const HEALTH_CHECK_QUERY = `
 `;
 
 /**
- * Check if an allocation exists in the hybrid allocator indexer
+ * Check if an allocation exists in the indexer
  */
 export async function getHybridAllocation(
   claimHash: string,
   chainId: string
 ): Promise<HybridAllocationResponse['allocation']> {
   try {
-    const response =
-      await hybridAllocatorClient.request<HybridAllocationResponse>(
-        GET_ALLOCATION_BY_CLAIM_HASH,
-        { claimHash, chainId }
-      );
+    const response = await graphqlClient.request<HybridAllocationResponse>(
+      GET_ALLOCATION_BY_CLAIM_HASH,
+      { claimHash, chainId }
+    );
     return response.allocation;
   } catch (error) {
     console.error('Error fetching hybrid allocation:', error);
@@ -514,7 +503,7 @@ export async function getHybridAllocation(
 }
 
 /**
- * Get all allocations for a sponsor from the hybrid allocator indexer.
+ * Get all allocations for a sponsor from the indexer.
  *
  * IMPORTANT: This function throws on error to ensure fail-closed behavior.
  * The allocator must NEVER issue allocations if on-chain state cannot be verified.
@@ -526,23 +515,20 @@ export async function getHybridAllocationsForSponsor(
   chainId: string
 ): Promise<HybridAllocationsResponse['allocations']['items']> {
   // Let errors propagate (fail-closed)
-  const response =
-    await hybridAllocatorClient.request<HybridAllocationsResponse>(
-      GET_ALLOCATIONS_FOR_SPONSOR,
-      { sponsor: sponsor.toLowerCase(), chainId }
-    );
+  const response = await graphqlClient.request<HybridAllocationsResponse>(
+    GET_ALLOCATIONS_FOR_SPONSOR,
+    { sponsor: sponsor.toLowerCase(), chainId }
+  );
   return response.allocations.items;
 }
 
 /**
- * Get active signers from the hybrid allocator indexer
+ * Get active signers from the indexer
  */
 export async function getActiveSigners(): Promise<string[]> {
   try {
     const response =
-      await hybridAllocatorClient.request<HybridSignersResponse>(
-        GET_ACTIVE_SIGNERS
-      );
+      await graphqlClient.request<HybridSignersResponse>(GET_ACTIVE_SIGNERS);
     return response.signers.items
       .filter((s) => s.isActive)
       .map((s) => s.address);
@@ -560,7 +546,7 @@ interface Lock {
 }
 
 /**
- * Get on-chain allocated balance for a specific sponsor and lockId from the hybrid allocator indexer.
+ * Get on-chain allocated balance for a specific sponsor and lockId from the indexer.
  * This sums up all allocation amounts that:
  * 1. Match the sponsor address
  * 2. Match the lockId (lockTag + token combination)
@@ -647,8 +633,8 @@ export async function getOnChainAllocatedBalance(
 }
 
 /**
- * Check health of both indexers
- * Returns true only if BOTH indexers are healthy (fail-closed behavior)
+ * Check health of the unified indexer
+ * Returns true only if the indexer is healthy (fail-closed behavior)
  */
 export async function checkIndexersHealth(): Promise<{
   allHealthy: boolean;
@@ -660,38 +646,34 @@ export async function checkIndexersHealth(): Promise<{
   // Return cached status if still valid
   if (now - indexerHealthStatus.lastCheck < HEALTH_CHECK_TTL) {
     return {
-      allHealthy:
-        indexerHealthStatus.compactIndexer &&
-        indexerHealthStatus.hybridAllocatorIndexer,
-      compactIndexer: indexerHealthStatus.compactIndexer,
-      hybridAllocatorIndexer: indexerHealthStatus.hybridAllocatorIndexer,
+      allHealthy: indexerHealthStatus.indexer,
+      // Both report the same status since it's a unified indexer
+      compactIndexer: indexerHealthStatus.indexer,
+      hybridAllocatorIndexer: indexerHealthStatus.indexer,
     };
   }
 
-  // Check both indexers in parallel
-  const [compactHealth, hybridHealth] = await Promise.all([
-    checkCompactIndexerHealth(),
-    checkHybridAllocatorIndexerHealth(),
-  ]);
+  // Check the unified indexer
+  const indexerHealth = await checkIndexerHealth();
 
   // Update cached status
   indexerHealthStatus = {
-    compactIndexer: compactHealth,
-    hybridAllocatorIndexer: hybridHealth,
+    indexer: indexerHealth,
     lastCheck: now,
   };
 
   return {
-    allHealthy: compactHealth && hybridHealth,
-    compactIndexer: compactHealth,
-    hybridAllocatorIndexer: hybridHealth,
+    allHealthy: indexerHealth,
+    // Both report the same status since it's a unified indexer
+    compactIndexer: indexerHealth,
+    hybridAllocatorIndexer: indexerHealth,
   };
 }
 
 /**
- * Check if the compact indexer is healthy
+ * Check if the unified indexer is healthy
  */
-async function checkCompactIndexerHealth(): Promise<boolean> {
+async function checkIndexerHealth(): Promise<boolean> {
   try {
     await graphqlClient.request(HEALTH_CHECK_QUERY);
     return true;
@@ -702,34 +684,16 @@ async function checkCompactIndexerHealth(): Promise<boolean> {
 }
 
 /**
- * Check if the hybrid allocator indexer is healthy
- */
-async function checkHybridAllocatorIndexerHealth(): Promise<boolean> {
-  try {
-    await hybridAllocatorClient.request(HEALTH_CHECK_QUERY);
-    return true;
-  } catch {
-    // Silently return false on health check failure - the caller will handle appropriately
-    return false;
-  }
-}
-
-/**
- * Ensure both indexers are healthy before proceeding with off-chain allocation
- * Throws an error if either indexer is unhealthy (fail-closed)
+ * Ensure the indexer is healthy before proceeding with off-chain allocation
+ * Throws an error if the indexer is unhealthy (fail-closed)
  */
 export async function ensureIndexersHealthy(): Promise<void> {
   const health = await checkIndexersHealth();
 
   if (!health.allHealthy) {
-    const unhealthyIndexers: string[] = [];
-    if (!health.compactIndexer) unhealthyIndexers.push('compact-indexer');
-    if (!health.hybridAllocatorIndexer)
-      unhealthyIndexers.push('hybrid-allocator-indexer');
-
     throw new Error(
       `Service temporarily unavailable: cannot verify allocation safety. ` +
-        `Unhealthy indexers: ${unhealthyIndexers.join(', ')}`
+        `Unhealthy indexer: unified-compact-indexer`
     );
   }
 }
@@ -746,8 +710,7 @@ export function getIndexerHealthStatus(): IndexerHealthStatus {
  */
 export function resetIndexerHealthCache(): void {
   indexerHealthStatus = {
-    compactIndexer: true,
-    hybridAllocatorIndexer: true,
+    indexer: true,
     lastCheck: 0,
   };
 }
