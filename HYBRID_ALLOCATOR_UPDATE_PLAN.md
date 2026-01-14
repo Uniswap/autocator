@@ -76,7 +76,7 @@ pnpm lint && pnpm type-check && pnpm format:check && pnpm test
 
 ## Implementation Progress
 
-### Completed Work (Phase 1 & 2)
+### Completed Work (Phases 1-5 + Permit2)
 
 #### ✅ Phase 1: Core Data Structures
 
@@ -199,20 +199,38 @@ ALLOWED_ARBITERS=
 | -------------------------------------- | ----------- | --------------------------------------------------------------------------- |
 | Unified `/allocation` endpoint         | ✅ Complete | `src/routes/allocation.ts` - single endpoint for all three request types    |
 | **Standard (signed compact)**          | ✅ Complete | Full implementation with signature verification, nonce validation, storage  |
-| Permit2 signature verification         | ⏳ Pending  | Stub created, returns 501 Not Implemented                                   |
-| Transaction hash lookup                | ⏳ Pending  | Stub created, returns 501 Not Implemented                                   |
-| Automatic partial allocation detection | ⏳ Pending  | Part of permit2/transaction handlers                                        |
-| Off-chain allocation for delta         | ⏳ Pending  | Part of permit2/transaction handlers                                        |
-| Balance verification                   | ✅ Complete | Uses existing `validateBatchAllocation` from `src/validation/allocation.ts` |
+| **Permit2 allocation**                 | ✅ Complete | Full implementation with Permit2 signature verification, delta calculation  |
+| Permit2 signature verification         | ✅ Complete | `verifyPermit2Signature()` in `src/crypto.ts`                               |
+| Automatic partial allocation detection | ✅ Complete | `calculateDepositCommitmentDeltas()` - lockTag-aware delta calculation      |
+| Off-chain allocation for delta         | ✅ Complete | `signHybridAllocationContext()` - signs only the excess amounts             |
+| Transaction hash lookup                | ⏳ Pending  | Returns 501 Not Implemented                                                 |
+| Balance verification                   | ✅ Complete | Uses `validateBatchAllocation` with on-chain allocation checking            |
+| On-chain allocation checking           | ✅ Complete | `getOnChainAllocatedBalance()` in `src/graphql.ts` prevents over-allocation |
 
 **New File Created: `src/routes/allocation.ts`**
 
 - `POST /allocation` - Unified allocation endpoint supporting:
   - `type: 'standard'` - Full off-chain allocation for signed BatchCompact ✅
-  - `type: 'permit2'` - Pre-execution hybrid (stub) ⏳
+  - `type: 'permit2'` - Pre-execution hybrid allocation ✅
   - `type: 'transaction'` - Post-execution hybrid (stub) ⏳
 - `GET /allocation/:chainId/:claimHash` - Check if allocation exists (local + indexer)
 - `POST /allocation/suggested-nonce` - Generate hybrid nonce with OFF_CHAIN command
+
+**New Permit2 Implementation (`src/routes/allocation.ts` + `src/crypto.ts`):**
+
+- `handlePermit2Allocation()` - Full Permit2 flow implementation
+- `calculateDepositCommitmentDeltas()` - LockTag-aware delta calculation (critical: matching by lockTag+token pair)
+- `verifyPermit2Signature()` - Complete Permit2 EIP-712 signature recovery
+- `generateBatchActivationWitnessHash()` - BatchActivation witness for Permit2
+- `generateBatchClaimHashWithMandate()` - Claim hash with mandate witness
+- `generateHybridAllocationContextHash()` - Context hash for partial allocations
+- `signHybridAllocationContext()` - Signs only the delta amounts for security
+
+**Unified Indexer Update (`src/graphql.ts`):**
+
+- Migrated from two separate indexers to unified indexer endpoint
+- `getOnChainAllocatedBalance()` - Fetches on-chain allocations to prevent over-allocation
+- Fail-closed behavior: refuses allocations if indexer unavailable
 
 ---
 
@@ -649,17 +667,26 @@ CREATE TABLE IF NOT EXISTS hybrid_allocations (
 - [x] Unit tests for hybrid-nonce utilities (`src/__tests__/validation/hybrid-nonce.test.ts`)
 - [x] Unit tests for arbiter validation (`src/__tests__/validation/arbiter.test.ts`)
 - [x] Fix Jest setup for lazy database loading
-- [x] All existing tests pass (231 tests)
-- [ ] Integration tests for `/allocation` endpoint
-- [ ] End-to-end test of allocation flow
+- [x] All existing tests pass
+- [x] Integration tests for `/allocation` endpoint (`src/__tests__/routes/allocation.test.ts`)
+- [x] Permit2 helper function tests (`src/__tests__/validation/permit2-allocation.test.ts`)
+- [ ] End-to-end Permit2 flow test with actual signature
 - [ ] Test indexer failover behavior
 
-### ⏳ Phase 6: Permit2 & Transaction Allocation (Future)
+### ✅ Phase 6: Permit2 Allocation (COMPLETE)
 
-- [ ] Implement `handlePermit2Allocation` in `src/routes/allocation.ts`
+- [x] Implement `handlePermit2Allocation` in `src/routes/allocation.ts`
+- [x] Add partial allocation detection (`calculateDepositCommitmentDeltas()`)
+- [x] Permit2 signature verification (`verifyPermit2Signature()` in `src/crypto.ts`)
+- [x] HybridAllocationContext signing (`signHybridAllocationContext()`)
+- [x] Tests for Permit2 helper functions
+
+### ⏳ Phase 7: Transaction Allocation (Future)
+
 - [ ] Implement `handleTransactionAllocation` in `src/routes/allocation.ts`
-- [ ] Add partial allocation detection (compare deposit vs commitment amounts)
-- [ ] Tests for permit2 and transaction allocation flows
+- [ ] Query indexer for transaction details
+- [ ] Extract deposit amounts from transaction logs
+- [ ] Tests for transaction allocation flow
 
 IMPORTANT NOTE: all new functionality must have corresponding new tests!
 
@@ -719,16 +746,32 @@ For additional context during implementation:
 
 ---
 
-_Document last updated: January 6, 2026_
+_Document last updated: January 14, 2026_
 _Based on implementation work in Autocator repository_
 
-Additional TODOs that are not reflected in the doc yet:
+## Additional TODOs / Remaining Work
 
-- use hybrid allocator indexer to check onchain allocations and ensure that we don't overallocate
-  - basically each allocated event will reserve tokens that cannot be allocated offchain
-  - may require adding latest processed block number and tracking block number => block hash on each indexer to ensure consistency between compact indexer and hybrid allocator indexer
-- use proper permit2 messages that The Compact expects in implementation and tests
-  - recommendation here is to examine Exarch as it has working examples of what this will look like in practice (even though Exarch is yet to be deployed)
-  - parse out deposited tokens from tokens on the preimage of the batch compact in question
-  - mandate will remain hidden to autocator, but the mandate hash and the witness typestring (specific to each arbiter) will need to be provided alongside the compact preimage for derivation of the claim hash
-- update README with latest feature set and interface
+### ✅ Completed (since last major update):
+
+- ✅ **On-chain allocation checking**: `getOnChainAllocatedBalance()` in `src/graphql.ts` now fetches on-chain allocations from the hybrid allocator indexer and includes them in balance validation via `validateBatchAllocation()` in `src/validation/allocation.ts`
+- ✅ **Permit2 flow implementation**: Full `handlePermit2Allocation()` with:
+  - Permit2 signature verification (`verifyPermit2Signature()`)
+  - LockTag-aware delta calculation (`calculateDepositCommitmentDeltas()`)
+  - HybridAllocationContext signing for partial allocations
+- ✅ **Unified indexer migration**: Moved from two separate indexers to a single unified indexer endpoint
+
+### ⏳ Still Pending:
+
+- **Transaction-based allocation (`type: 'transaction'`)**: Query indexer for completed transaction, extract deposit amounts from logs
+- **Block consistency tracking**: May need to track block number → block hash mappings between indexers to ensure consistency
+- **README update**: Document latest API endpoints, request/response formats, and feature set
+- **Frontend hooks**: React hooks for HybridAllocator contract interaction (`useHybridAllocator.ts`)
+- **Arbiter selection UI**: Frontend component for users to select their arbiter
+
+### Reference for Permit2 Messages:
+
+For proper Permit2 message structure, examine **Exarch** repository which has working examples of what the flows look like in practice (even though Exarch is yet to be deployed). Key points:
+
+- Mandate remains hidden to autocator
+- Mandate hash and witness typestring (arbiter-specific) are provided alongside compact preimage
+- Used for claim hash derivation
