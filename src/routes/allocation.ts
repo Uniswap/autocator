@@ -19,6 +19,8 @@ import {
   type BatchCompactMessage,
   type ValidatedBatchCompactMessage,
   type Lock,
+  type Permit2Message,
+  type DepositCommitmentDelta,
 } from '../validation';
 import { ensureIndexersHealthy, getHybridAllocation } from '../graphql';
 import {
@@ -26,6 +28,9 @@ import {
   signBatchCompact,
   generateDomainHash,
   generateDigest,
+  generateBatchClaimHashWithMandate,
+  verifyPermit2Signature,
+  signHybridAllocationContext,
 } from '../crypto';
 import { randomUUID } from 'crypto';
 import { PGlite } from '@electric-sql/pglite';
@@ -53,9 +58,10 @@ interface StandardAllocationRequest {
 interface Permit2AllocationRequest {
   type: 'permit2';
   chainId: string;
-  permit2Message: unknown; // Full Permit2 message with embedded compact witness
+  permit2Message: Permit2Message; // Full Permit2 message with embedded compact witness
   signature: Hex;
-  compact: BatchCompactMessage; // The compact pre-image for verification
+  mandateHash: Hex; // The mandate hash (bytes32) - used as witness hash in compact
+  witnessTypeString: string; // The full witness type string for claim hash derivation
 }
 
 /**
@@ -367,18 +373,265 @@ async function handleStandardAllocation(
 }
 
 /**
+ * Normalize a lockTag to lowercase hex string without 0x prefix for comparison
+ */
+function normalizeLockTag(lockTag: string): string {
+  const stripped = lockTag.startsWith('0x') ? lockTag.slice(2) : lockTag;
+  return stripped.toLowerCase().padStart(24, '0'); // 12 bytes = 24 hex chars
+}
+
+/**
+ * Calculate delta between deposit amounts and commitment amounts
+ *
+ * CRITICAL: Matching is done by (lockTag, token) pair, NOT just by token!
+ *
+ * In a Permit2 deposit flow:
+ * - All deposited tokens share a SINGLE lockTag (depositLockTag)
+ * - Each compact commitment has its own lockTag
+ * - Only commitments whose lockTag MATCHES the depositLockTag can be offset
+ * - Commitments with different lockTags require FULL allocation (no offset)
+ *
+ * @param commitments - The compact commitments (each has its own lockTag)
+ * @param deposits - The token deposits (all share the depositLockTag)
+ * @param depositLockTag - The single lockTag for ALL deposits
+ */
+function calculateDepositCommitmentDeltas(
+  commitments: Array<{ lockTag: string; token: string; amount: string }>,
+  deposits: Array<{ token: string; amount: string }>,
+  depositLockTag: string
+): DepositCommitmentDelta[] {
+  const deltas: DepositCommitmentDelta[] = [];
+  const normalizedDepositLockTag = normalizeLockTag(depositLockTag);
+
+  // Create a map of deposit amounts by (lockTag, token) composite key
+  // All deposits use the SAME lockTag (depositLockTag)
+  const depositByLockTagAndToken = new Map<string, bigint>();
+  for (const deposit of deposits) {
+    const normalizedToken = getAddress(deposit.token).toLowerCase();
+    // Key format: "lockTag:token"
+    const key = `${normalizedDepositLockTag}:${normalizedToken}`;
+    const existingAmount = depositByLockTagAndToken.get(key) || BigInt(0);
+    depositByLockTagAndToken.set(key, existingAmount + BigInt(deposit.amount));
+  }
+
+  // For each commitment, calculate the delta
+  for (const commitment of commitments) {
+    const normalizedCommitmentLockTag = normalizeLockTag(commitment.lockTag);
+    const normalizedToken = getAddress(commitment.token).toLowerCase();
+    const commitmentAmount = BigInt(commitment.amount);
+
+    // Key for this commitment's (lockTag, token) pair
+    const key = `${normalizedCommitmentLockTag}:${normalizedToken}`;
+
+    // Only get deposit amount if the commitment's lockTag matches the deposit lockTag
+    // If lockTags differ, there's NO matching deposit (even if same token!)
+    const depositAmount = depositByLockTagAndToken.get(key) || BigInt(0);
+
+    // Calculate delta (positive = needs allocation)
+    const delta =
+      commitmentAmount > depositAmount
+        ? commitmentAmount - depositAmount
+        : BigInt(0);
+
+    deltas.push({
+      lockTag: commitment.lockTag,
+      token: commitment.token,
+      commitmentAmount,
+      depositAmount,
+      delta,
+    });
+
+    // Reduce the deposit amount for this (lockTag, token) pair
+    if (depositAmount > BigInt(0)) {
+      const remaining =
+        depositAmount > commitmentAmount
+          ? depositAmount - commitmentAmount
+          : BigInt(0);
+      depositByLockTagAndToken.set(key, remaining);
+    }
+  }
+
+  return deltas;
+}
+
+/**
  * Handle Permit2-based allocation request
- * TODO: Implement full Permit2 verification
+ *
+ * This flow handles hybrid allocations where:
+ * 1. Sponsor signs a Permit2 message that deposits tokens AND registers a compact
+ * 2. If compact commits more than deposited, additional off-chain allocation is needed
+ * 3. The allocator signs for the delta (excess) amount only
  */
 async function handlePermit2Allocation(
-  _request: Permit2AllocationRequest,
-  _db: PGlite
+  request: Permit2AllocationRequest,
+  db: PGlite
 ): Promise<AllocationResponse> {
-  // For now, throw not implemented
-  throw new Error(
-    'Permit2-based allocation not yet implemented. ' +
-      'Use type "standard" for full off-chain allocation.'
+  const { chainId, permit2Message, signature, mandateHash, witnessTypeString } =
+    request;
+
+  // Extract the compact from the Permit2 message witness
+  const compact = permit2Message.witness.compact;
+
+  // Validate basic request structure
+  if (
+    !compact ||
+    !compact.arbiter ||
+    !compact.sponsor ||
+    !compact.commitments
+  ) {
+    throw new Error('Invalid Permit2 message: missing compact in witness');
+  }
+
+  if (
+    !mandateHash ||
+    !mandateHash.startsWith('0x') ||
+    mandateHash.length !== 66
+  ) {
+    throw new Error('Invalid mandate hash: must be 32-byte hex string');
+  }
+
+  if (!witnessTypeString || witnessTypeString.length === 0) {
+    throw new Error('Invalid witness type string: must not be empty');
+  }
+
+  // Validate depositLockTag
+  if (
+    !permit2Message.depositLockTag ||
+    permit2Message.depositLockTag.length === 0
+  ) {
+    throw new Error('Invalid Permit2 message: depositLockTag is required');
+  }
+
+  // Validate arbiter
+  const arbiterValidation = validateArbiter(compact.arbiter);
+  if (!arbiterValidation.isValid) {
+    throw new Error(arbiterValidation.error || 'Invalid arbiter');
+  }
+
+  // Verify the Permit2 signature
+  // This proves the sponsor authorized this specific deposit+compact combination
+  const recoveredSigner = await verifyPermit2Signature(
+    permit2Message,
+    signature,
+    chainId,
+    witnessTypeString,
+    mandateHash
   );
+
+  if (
+    recoveredSigner.toLowerCase() !== getAddress(compact.sponsor).toLowerCase()
+  ) {
+    throw new Error(
+      `Permit2 signature mismatch: recovered ${recoveredSigner}, expected ${compact.sponsor}`
+    );
+  }
+
+  // Create a BatchCompactMessage with the mandate hash as witness
+  const compactWithWitness: BatchCompactMessage = {
+    arbiter: compact.arbiter,
+    sponsor: compact.sponsor,
+    nonce: compact.nonce,
+    expires: compact.expires,
+    commitments: compact.commitments,
+    witnessTypeString: witnessTypeString,
+    witnessHash: mandateHash,
+  };
+
+  // Validate the BatchCompact structure and allocation
+  const validationResult = await validateBatchCompact(
+    compactWithWitness,
+    chainId,
+    db
+  );
+  if (!validationResult.isValid || !validationResult.validatedCompact) {
+    throw new Error(
+      validationResult.error || 'Invalid BatchCompact in Permit2 message'
+    );
+  }
+
+  const validatedCompact =
+    validationResult.validatedCompact as ValidatedBatchCompactMessage;
+
+  // Validate hybrid nonce structure (must be PERMIT2 command for Permit2-based allocation)
+  const nonceValidation = validateHybridNonce(
+    validatedCompact.nonce,
+    validatedCompact.sponsor,
+    NonceCommand.PERMIT2
+  );
+  if (!nonceValidation.isValid) {
+    throw new Error(
+      nonceValidation.error || 'Invalid nonce structure for Permit2 allocation'
+    );
+  }
+
+  // Calculate deposit vs commitment deltas
+  // CRITICAL: Match by (lockTag, token) pair - only commitments with matching lockTag get offset
+  const deltas = calculateDepositCommitmentDeltas(
+    validatedCompact.commitments,
+    permit2Message.permitted,
+    permit2Message.depositLockTag
+  );
+
+  // Check if any allocation is needed
+  const totalDelta = deltas.reduce((sum, d) => sum + d.delta, BigInt(0));
+
+  // Generate the claim hash with mandate
+  const claimHash = generateBatchClaimHashWithMandate(
+    validatedCompact.arbiter,
+    validatedCompact.sponsor,
+    validatedCompact.nonce,
+    validatedCompact.expires,
+    validatedCompact.commitments,
+    mandateHash as Hex,
+    witnessTypeString
+  );
+
+  if (totalDelta === BigInt(0)) {
+    // Deposit fully covers all commitments - no additional allocation needed
+    // NOTE: In this case, there's no need to call autocator at all.
+    // The sponsor can use the fully on-chain flow via the hybrid allocator.
+    return {
+      claimHash,
+      allocation: null,
+      message:
+        'Deposit covers all commitments - no additional allocation needed (use on-chain flow)',
+    };
+  }
+
+  // Build the list of commitments that need additional allocation (delta > 0)
+  // IMPORTANT: We only sign for the DELTA amounts, not the full compact amounts.
+  // This prevents over-allocation if the Permit2 message is never relayed.
+  const additionalCommitments = deltas
+    .filter((d) => d.delta > BigInt(0))
+    .map((d) => ({
+      lockTag: d.lockTag,
+      token: d.token,
+      amount: d.delta.toString(), // Only the delta/excess amount
+    }));
+
+  // Sign the HybridAllocationContext - this authorizes ONLY the additional amounts
+  // NOT the full compact. The deposit amounts are handled on-chain by the hybrid allocator.
+  const { signature: signaturePromise } = await signHybridAllocationContext(
+    claimHash,
+    additionalCommitments,
+    BigInt(chainId)
+  );
+  const allocationSignature = await signaturePromise;
+
+  // Note: We do NOT store this in the database the same way as standard allocations
+  // because we're not signing the full compact. The signature is for the
+  // HybridAllocationContext which ties together the claim hash and additional amounts.
+
+  return {
+    claimHash,
+    allocation: {
+      commitments: additionalCommitments,
+      nonce:
+        `0x${validatedCompact.nonce.toString(16).padStart(64, '0')}` as Hex,
+      signature: allocationSignature,
+    },
+    message: `Permit2 allocation successful - signed HybridAllocationContext for ${additionalCommitments.length} commitment(s) exceeding deposit`,
+  };
 }
 
 /**

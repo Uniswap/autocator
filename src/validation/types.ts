@@ -133,6 +133,63 @@ export interface ValidationResult {
   error?: string;
 }
 
+// ============================================================
+// Permit2 Types
+// ============================================================
+
+// Permit2 contract address (same on all EVM chains)
+export const PERMIT2_ADDRESS =
+  '0x000000000022D473030F116dDEE9F6B43aC78BA3' as const;
+
+// Token permission in Permit2 message
+export interface TokenPermission {
+  token: string;
+  amount: string; // Can be decimal or hex string
+}
+
+// Deposit details for The Compact's batchDepositAndRegisterViaPermit2
+export interface DepositDetails {
+  nonce: string; // Permit2 nonce
+  deadline: string; // Permit2 deadline (Unix timestamp)
+  lockTag: string; // bytes12 lock tag for deposit
+}
+
+// BatchActivation witness structure for Permit2
+export interface BatchActivationWitness {
+  activator: string; // The Hybrid Allocator address
+  ids: string[]; // Resource lock IDs (uint256[])
+  compact: BatchCompactMessage; // The compact being registered
+}
+
+// Full Permit2 message structure
+export interface Permit2Message {
+  permitted: TokenPermission[]; // Token deposits
+  spender: string; // The Compact address (recipient of tokens)
+  nonce: string; // Permit2 nonce
+  deadline: string; // Deadline for signature validity
+  witness: BatchActivationWitness; // BatchActivation witness containing the compact
+  depositLockTag: string; // The lockTag used for ALL deposits (bytes12 hex)
+  // Note: All tokens in `permitted` are deposited with this SAME lockTag.
+  // Only compact commitments with matching (lockTag, token) pairs can be offset.
+}
+
+// Structured Permit2 allocation request (updated from unknown)
+export interface Permit2AllocationPayload {
+  permit2Message: Permit2Message;
+  signature: string; // Sponsor's signature on the Permit2 message
+  mandateHash: string; // The mandate hash (bytes32) - used as witness hash in compact
+  witnessTypeString: string; // The full witness type string for claim hash derivation
+}
+
+// Result of deposit vs commitment comparison
+export interface DepositCommitmentDelta {
+  lockTag: string;
+  token: string;
+  commitmentAmount: bigint;
+  depositAmount: bigint;
+  delta: bigint; // Positive means needs allocation, zero means fully covered
+}
+
 // Helper to determine compact category from message structure
 export function getCompactCategory(
   message: AnyCompactMessage

@@ -528,23 +528,105 @@ describe('Allocation Routes', () => {
       });
     });
 
-    describe('Permit2 allocation (not yet implemented)', () => {
-      it('should return 501 for permit2 allocation requests', async () => {
+    describe('Permit2 allocation', () => {
+      it('should reject permit2 request with missing witness in permit2Message', async () => {
         const response = await server.inject({
           method: 'POST',
           url: '/allocation',
           payload: {
             type: 'permit2',
             chainId: '1',
-            permit2Message: {},
-            signature: '0x00',
-            compact: getFreshBatchCompact(),
+            permit2Message: {
+              permitted: [],
+              spender: '0x0000000000000000000000000000000000000001',
+              nonce: '0',
+              deadline: '9999999999',
+              depositLockTag: encodeLockTag(
+                BigInt(1),
+                ResetPeriod.ThirtyDays,
+                Scope.Multichain
+              ),
+              witness: {}, // Missing compact in witness
+            },
+            signature:
+              '0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+            mandateHash:
+              '0x0000000000000000000000000000000000000000000000000000000000000000',
+            witnessTypeString: 'test',
           },
         });
 
-        expect(response.statusCode).toBe(501);
+        expect(response.statusCode).toBe(400);
         const result = JSON.parse(response.payload);
-        expect(result.error).toContain('not yet implemented');
+        expect(result.error).toContain('Invalid Permit2 message');
+      });
+
+      it('should reject permit2 request with missing depositLockTag', async () => {
+        const freshCompact = getFreshBatchCompact();
+        const response = await server.inject({
+          method: 'POST',
+          url: '/allocation',
+          payload: {
+            type: 'permit2',
+            chainId: '1',
+            permit2Message: {
+              permitted: [],
+              spender: '0x0000000000000000000000000000000000000001',
+              nonce: '0',
+              deadline: '9999999999',
+              // Missing depositLockTag!
+              witness: {
+                activator: '0x0000000000000000000000000000000000000001',
+                ids: [],
+                compact: freshCompact,
+              },
+            },
+            signature:
+              '0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+            mandateHash:
+              '0x0000000000000000000000000000000000000000000000000000000000000000',
+            witnessTypeString: 'test',
+          },
+        });
+
+        expect(response.statusCode).toBe(400);
+        const result = JSON.parse(response.payload);
+        expect(result.error).toContain('depositLockTag is required');
+      });
+
+      it('should reject permit2 request with invalid mandate hash', async () => {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/allocation',
+          payload: {
+            type: 'permit2',
+            chainId: '1',
+            permit2Message: {
+              permitted: [],
+              spender: '0x0000000000000000000000000000000000000001',
+              nonce: '0',
+              deadline: '9999999999',
+              depositLockTag: encodeLockTag(
+                BigInt(1),
+                ResetPeriod.ThirtyDays,
+                Scope.Multichain
+              ),
+              witness: {
+                activator: '0x0000000000000000000000000000000000000001',
+                ids: [],
+                compact: getFreshBatchCompact(),
+              },
+            },
+            signature:
+              '0x0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000',
+            mandateHash: '0xinvalid', // Invalid mandate hash
+            witnessTypeString: 'test',
+          },
+        });
+
+        expect(response.statusCode).toBe(400);
+        const result = JSON.parse(response.payload);
+        expect(result.error).toContain('Invalid mandate hash');
       });
     });
 

@@ -7,8 +7,17 @@ import {
   concat,
   getAddress,
   signatureToCompactSignature,
+  recoverAddress,
+  parseCompactSignature,
+  compactSignatureToSignature,
+  serializeSignature,
 } from 'viem';
 import { privateKeyToAccount, sign } from 'viem/accounts';
+import {
+  PERMIT2_ADDRESS,
+  type Permit2Message,
+  type TokenPermission,
+} from './validation/types';
 import { type StoredCompactMessage } from './compact';
 import {
   ValidatedBatchCompactMessage,
@@ -469,4 +478,389 @@ export function verifySigningAddress(configuredAddress: string): void {
         `actual signing address ${normalizedActual}`
     );
   }
+}
+
+// ============================================================
+// Permit2 Signature Verification
+// ============================================================
+
+// Permit2 EIP-712 domain typehash (different from The Compact)
+const PERMIT2_EIP712_DOMAIN_TYPEHASH = keccak256(
+  encodePacked(
+    ['string'],
+    ['EIP712Domain(string name,uint256 chainId,address verifyingContract)']
+  )
+);
+
+// Token permissions typehash
+const TOKEN_PERMISSIONS_TYPEHASH = keccak256(
+  encodePacked(['string'], ['TokenPermissions(address token,uint256 amount)'])
+);
+
+/**
+ * Generate the Permit2 domain separator for a specific chain
+ */
+export function generatePermit2DomainSeparator(chainId: bigint): Hex {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { name: 'typeHash', type: 'bytes32' },
+        { name: 'name', type: 'bytes32' },
+        { name: 'chainId', type: 'uint256' },
+        { name: 'verifyingContract', type: 'address' },
+      ],
+      [
+        PERMIT2_EIP712_DOMAIN_TYPEHASH,
+        keccak256(encodePacked(['string'], ['Permit2'])),
+        chainId,
+        PERMIT2_ADDRESS,
+      ]
+    )
+  );
+}
+
+/**
+ * Hash an array of token permissions for Permit2
+ */
+export function hashTokenPermissions(permissions: TokenPermission[]): Hex {
+  const encodedPermissions = permissions.map((p) =>
+    keccak256(
+      encodeAbiParameters(
+        [
+          { name: 'typeHash', type: 'bytes32' },
+          { name: 'token', type: 'address' },
+          { name: 'amount', type: 'uint256' },
+        ],
+        [TOKEN_PERMISSIONS_TYPEHASH, getAddress(p.token), BigInt(p.amount)]
+      )
+    )
+  );
+  return keccak256(
+    encodePacked(
+      encodedPermissions.map(() => 'bytes32'),
+      encodedPermissions
+    )
+  );
+}
+
+/**
+ * Generate the BatchActivation witness hash for Permit2
+ * This is the witness that gets embedded in the Permit2 signature
+ */
+export function generateBatchActivationWitnessHash(
+  activator: string,
+  ids: bigint[],
+  compactHash: Hex,
+  witnessTypeString: string
+): Hex {
+  // BatchActivation typehash includes the full compact type string
+  const batchActivationTypehash = keccak256(
+    encodePacked(
+      ['string'],
+      [
+        'BatchActivation(address activator,uint256[] ids,BatchCompact compact)BatchCompact(address arbiter,address sponsor,uint256 nonce,uint256 expires,Lock[] commitments,Mandate mandate)Lock(bytes12 lockTag,address token,uint256 amount)Mandate(' +
+          witnessTypeString +
+          ')',
+      ]
+    )
+  );
+
+  // Hash the ids array
+  const idsHash = keccak256(
+    encodeAbiParameters([{ name: 'ids', type: 'uint256[]' }], [ids])
+  );
+
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { name: 'typeHash', type: 'bytes32' },
+        { name: 'activator', type: 'address' },
+        { name: 'idsHash', type: 'bytes32' },
+        { name: 'compactHash', type: 'bytes32' },
+      ],
+      [batchActivationTypehash, getAddress(activator), idsHash, compactHash]
+    )
+  );
+}
+
+/**
+ * Generate the claim hash for a BatchCompact with mandate witness
+ * Used when the compact has a mandate (witness) included
+ */
+export function generateBatchClaimHashWithMandate(
+  arbiter: string,
+  sponsor: string,
+  nonce: bigint,
+  expires: bigint,
+  commitments: Array<{ lockTag: string; token: string; amount: string }>,
+  mandateHash: Hex,
+  witnessTypeString: string
+): Hex {
+  const normalizedArbiter = getAddress(arbiter);
+  const normalizedSponsor = getAddress(sponsor);
+
+  // Hash each lock and then hash the array (in original order, no sorting)
+  const LOCK_TYPEHASH = keccak256(
+    encodePacked(
+      ['string'],
+      ['Lock(bytes12 lockTag,address token,uint256 amount)']
+    )
+  );
+  const lockHashes = commitments.map((c) =>
+    keccak256(
+      encodeAbiParameters(
+        [
+          { name: 'typeHash', type: 'bytes32' },
+          { name: 'lockTag', type: 'bytes12' },
+          { name: 'token', type: 'address' },
+          { name: 'amount', type: 'uint256' },
+        ],
+        [
+          LOCK_TYPEHASH,
+          (c.lockTag.startsWith('0x')
+            ? c.lockTag
+            : `0x${c.lockTag}`) as `0x${string}`,
+          getAddress(c.token),
+          BigInt(c.amount),
+        ]
+      )
+    )
+  );
+  const commitmentsHash = keccak256(
+    encodePacked(
+      lockHashes.map(() => 'bytes32'),
+      lockHashes
+    )
+  );
+
+  // Generate type hash with mandate
+  const typeHash = keccak256(
+    encodePacked(
+      ['string'],
+      [
+        'BatchCompact(address arbiter,address sponsor,uint256 nonce,uint256 expires,Lock[] commitments,Mandate mandate)Lock(bytes12 lockTag,address token,uint256 amount)Mandate(' +
+          witnessTypeString +
+          ')',
+      ]
+    )
+  );
+
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { name: 'typeHash', type: 'bytes32' },
+        { name: 'arbiter', type: 'address' },
+        { name: 'sponsor', type: 'address' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'expires', type: 'uint256' },
+        { name: 'commitmentsHash', type: 'bytes32' },
+        { name: 'mandateHash', type: 'bytes32' },
+      ],
+      [
+        typeHash,
+        normalizedArbiter,
+        normalizedSponsor,
+        nonce,
+        expires,
+        commitmentsHash,
+        mandateHash,
+      ]
+    )
+  );
+}
+
+// HybridAllocationContext typehash
+// keccak256('HybridAllocationContext(bytes32 claimHash,Lock[] additionalCommitments)Lock(bytes12 lockTag,address token,uint256 amount)')
+const HYBRID_ALLOCATION_CONTEXT_TYPEHASH = keccak256(
+  encodePacked(
+    ['string'],
+    [
+      'HybridAllocationContext(bytes32 claimHash,Lock[] additionalCommitments)Lock(bytes12 lockTag,address token,uint256 amount)',
+    ]
+  )
+);
+
+/**
+ * Generate the HybridAllocationContext hash
+ * Used for signing additional allocation amounts in Permit2 flows
+ */
+export function generateHybridAllocationContextHash(
+  claimHash: Hex,
+  additionalCommitments: Array<{
+    lockTag: string;
+    token: string;
+    amount: string;
+  }>
+): Hex {
+  // Lock typehash for individual commitment hashing
+  const LOCK_TYPEHASH_LOCAL = keccak256(
+    encodePacked(
+      ['string'],
+      ['Lock(bytes12 lockTag,address token,uint256 amount)']
+    )
+  );
+
+  // Hash each additional commitment
+  const commitmentHashes = additionalCommitments.map((c) =>
+    keccak256(
+      encodeAbiParameters(
+        [
+          { name: 'typeHash', type: 'bytes32' },
+          { name: 'lockTag', type: 'bytes12' },
+          { name: 'token', type: 'address' },
+          { name: 'amount', type: 'uint256' },
+        ],
+        [
+          LOCK_TYPEHASH_LOCAL,
+          (c.lockTag.startsWith('0x')
+            ? c.lockTag
+            : `0x${c.lockTag}`) as `0x${string}`,
+          getAddress(c.token),
+          BigInt(c.amount),
+        ]
+      )
+    )
+  );
+
+  // Hash the array of commitment hashes
+  const commitmentsArrayHash = keccak256(
+    encodePacked(
+      commitmentHashes.map(() => 'bytes32'),
+      commitmentHashes
+    )
+  );
+
+  // Generate the full context hash
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { name: 'typeHash', type: 'bytes32' },
+        { name: 'claimHash', type: 'bytes32' },
+        { name: 'additionalCommitmentsHash', type: 'bytes32' },
+      ],
+      [HYBRID_ALLOCATION_CONTEXT_TYPEHASH, claimHash, commitmentsArrayHash]
+    )
+  );
+}
+
+/**
+ * Sign a HybridAllocationContext
+ * Returns a signature authorizing additional allocation amounts for a Permit2 flow
+ */
+export async function signHybridAllocationContext(
+  claimHash: Hex,
+  additionalCommitments: Array<{
+    lockTag: string;
+    token: string;
+    amount: string;
+  }>,
+  chainId: bigint
+): Promise<{ contextHash: Hex; digest: Hex; signature: Promise<Hex> }> {
+  const contextHash = generateHybridAllocationContextHash(
+    claimHash,
+    additionalCommitments
+  );
+  const domainHash = generateDomainHash(chainId);
+  const digest = generateDigest(contextHash, domainHash);
+  return {
+    contextHash,
+    digest,
+    signature: signDigest(digest),
+  };
+}
+
+/**
+ * Verify a Permit2 signature
+ * Returns the recovered signer address
+ */
+export async function verifyPermit2Signature(
+  permit2Message: Permit2Message,
+  signature: Hex,
+  chainId: string,
+  witnessTypeString: string,
+  mandateHash: Hex
+): Promise<string> {
+  const chainIdBigInt = BigInt(chainId);
+
+  // Generate domain separator
+  const domainSeparator = generatePermit2DomainSeparator(chainIdBigInt);
+
+  // Hash token permissions
+  const tokenPermissionsHash = hashTokenPermissions(permit2Message.permitted);
+
+  // Generate compact hash with mandate
+  const compact = permit2Message.witness.compact;
+  const compactHash = generateBatchClaimHashWithMandate(
+    compact.arbiter,
+    compact.sponsor,
+    BigInt(compact.nonce!),
+    BigInt(compact.expires),
+    compact.commitments,
+    mandateHash,
+    witnessTypeString
+  );
+
+  // Compute resource lock IDs from commitments
+  const ids = compact.commitments.map((c) => {
+    const lockTagBigInt = BigInt(c.lockTag);
+    const tokenBigInt = BigInt(c.token);
+    return (lockTagBigInt << BigInt(160)) | tokenBigInt;
+  });
+
+  // Generate witness hash
+  const witnessHash = generateBatchActivationWitnessHash(
+    permit2Message.witness.activator,
+    ids,
+    compactHash,
+    witnessTypeString
+  );
+
+  // Generate the permit typehash with witness
+  const PERMIT_TYPEHASH = keccak256(
+    encodePacked(
+      ['string'],
+      [
+        'PermitBatchWitnessTransferFrom(TokenPermissions[] permitted,address spender,uint256 nonce,uint256 deadline,BatchActivation witness)BatchActivation(address activator,uint256[] ids,BatchCompact compact)BatchCompact(address arbiter,address sponsor,uint256 nonce,uint256 expires,Lock[] commitments,Mandate mandate)Lock(bytes12 lockTag,address token,uint256 amount)Mandate(' +
+          witnessTypeString +
+          ')TokenPermissions(address token,uint256 amount)',
+      ]
+    )
+  );
+
+  // Generate the struct hash
+  const structHash = keccak256(
+    encodeAbiParameters(
+      [
+        { name: 'typeHash', type: 'bytes32' },
+        { name: 'tokenPermissionsHash', type: 'bytes32' },
+        { name: 'spender', type: 'address' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint256' },
+        { name: 'witnessHash', type: 'bytes32' },
+      ],
+      [
+        PERMIT_TYPEHASH,
+        tokenPermissionsHash,
+        getAddress(permit2Message.spender),
+        BigInt(permit2Message.nonce),
+        BigInt(permit2Message.deadline),
+        witnessHash,
+      ]
+    )
+  );
+
+  // Generate the final digest
+  const digest = keccak256(concat(['0x1901', domainSeparator, structHash]));
+
+  // Recover signer from compact signature
+  const parsedCompactSig = parseCompactSignature(signature);
+  const fullSignature = compactSignatureToSignature(parsedCompactSig);
+  const serializedSig = serializeSignature(fullSignature);
+
+  const recoveredAddress = await recoverAddress({
+    hash: digest,
+    signature: serializedSig,
+  });
+
+  return recoveredAddress;
 }
