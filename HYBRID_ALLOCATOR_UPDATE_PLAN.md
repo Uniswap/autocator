@@ -670,8 +670,8 @@ CREATE TABLE IF NOT EXISTS hybrid_allocations (
 - [x] All existing tests pass
 - [x] Integration tests for `/allocation` endpoint (`src/__tests__/routes/allocation.test.ts`)
 - [x] Permit2 helper function tests (`src/__tests__/validation/permit2-allocation.test.ts`)
-- [ ] End-to-end Permit2 flow test with actual signature
-- [ ] Test indexer failover behavior
+- [x] End-to-end Permit2 flow test with actual signature (`src/__tests__/routes/permit2-e2e.test.ts`)
+- [x] Test indexer failover behavior (503 response when indexer unhealthy)
 
 ### ✅ Phase 6: Permit2 Allocation (COMPLETE)
 
@@ -759,6 +759,15 @@ _Based on implementation work in Autocator repository_
   - LockTag-aware delta calculation (`calculateDepositCommitmentDeltas()`)
   - HybridAllocationContext signing for partial allocations
 - ✅ **Unified indexer migration**: Moved from two separate indexers to a single unified indexer endpoint
+- ✅ **End-to-end Permit2 integration test**: `src/__tests__/routes/permit2-e2e.test.ts` (NEW)
+  - Full Permit2 signature generation with test wallet
+  - Tests for deposit = commitment (no delta)
+  - Tests for commitment > deposit (positive delta requiring allocation)
+  - Tests for deposit > commitment (excess deposit, no delta)
+  - Tests for signature from wrong address (should reject)
+  - Tests for different lockTags (commitment lockTag differs from deposit lockTag)
+  - Tests for multiple commitments with partial deposits
+  - Tests for indexer health check failures (503 response)
 
 ### ⏳ Still Pending:
 
