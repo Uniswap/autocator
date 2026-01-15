@@ -4,6 +4,17 @@ import { useBalances } from './useBalances';
 import { useNotification } from './useNotification';
 import { useAllocatorAPI } from './useAllocatorAPI';
 import { parseUnits } from 'viem';
+import {
+  KNOWN_ARBITERS,
+  CUSTOM_ARBITER_OPTION,
+  TRIBUNAL_ADDRESS,
+  type ArbiterOption,
+} from '../constants/contracts';
+import {
+  NonceCommand,
+  constructHybridNonce,
+  generateRandomFragment,
+} from './useHybridAllocator';
 
 interface Token {
   tokenAddress: string;
@@ -50,7 +61,7 @@ export function useCreateAllocation() {
   const [formData, setFormData] = useState({
     lockId: '',
     amount: '',
-    arbiterAddress: '',
+    arbiterAddress: TRIBUNAL_ADDRESS as string, // Default to Tribunal
     nonce: '',
     expiration: '',
     witnessHash: '',
@@ -72,14 +83,41 @@ export function useCreateAllocation() {
   const [customExpiry, setCustomExpiry] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // Arbiter selection state
+  const [selectedArbiter, setSelectedArbiter] = useState<ArbiterOption>(
+    KNOWN_ARBITERS[0] // Default to Tribunal
+  );
+  const [showCustomArbiter, setShowCustomArbiter] = useState(false);
+  const [customArbiterAddress, setCustomArbiterAddress] = useState('');
+
+  // All available arbiter options including custom
+  const arbiterOptions: ArbiterOption[] = [
+    ...KNOWN_ARBITERS,
+    CUSTOM_ARBITER_OPTION,
+  ];
+
+  // Generate a hybrid nonce with OFF_CHAIN command byte
   const generateNewNonce = useCallback(() => {
     if (address) {
-      const addressBytes = address.slice(2);
-      const randomBytes = Array.from({ length: 24 }, () =>
-        Math.floor(Math.random() * 16).toString(16)
-      ).join('');
-      const nonce = `0x${addressBytes}${randomBytes}`;
-      setFormData((prev) => ({ ...prev, nonce }));
+      try {
+        const fragment = generateRandomFragment();
+        const nonce = constructHybridNonce(
+          NonceCommand.OFF_CHAIN,
+          address as `0x${string}`,
+          fragment
+        );
+        const nonceHex = `0x${nonce.toString(16).padStart(64, '0')}`;
+        setFormData((prev) => ({ ...prev, nonce: nonceHex }));
+      } catch (error) {
+        console.error('Error generating nonce:', error);
+        // Fallback to simple random nonce if hybrid construction fails
+        const addressBytes = address.slice(2);
+        const randomBytes = Array.from({ length: 24 }, () =>
+          Math.floor(Math.random() * 16).toString(16)
+        ).join('');
+        const nonce = `0x${addressBytes}${randomBytes}`;
+        setFormData((prev) => ({ ...prev, nonce }));
+      }
     }
   }, [address]);
 
@@ -135,6 +173,45 @@ export function useCreateAllocation() {
       expiration: '', // Clear any custom expiration
     }));
     setErrors((prev) => ({ ...prev, expiration: '' }));
+  };
+
+  // Handle arbiter selection from dropdown
+  const handleArbiterChange = (arbiterAddress: string) => {
+    // Check if this is a known arbiter or custom option
+    const knownArbiter = arbiterOptions.find(
+      (a) => a.address.toLowerCase() === arbiterAddress.toLowerCase()
+    );
+
+    if (knownArbiter && !knownArbiter.isCustom) {
+      // Selected a known arbiter
+      setSelectedArbiter(knownArbiter);
+      setShowCustomArbiter(false);
+      setFormData((prev) => ({
+        ...prev,
+        arbiterAddress: knownArbiter.address,
+      }));
+      setErrors((prev) => ({ ...prev, arbiterAddress: '' }));
+    } else if (arbiterAddress === 'custom') {
+      // Selected custom option
+      setSelectedArbiter(CUSTOM_ARBITER_OPTION);
+      setShowCustomArbiter(true);
+      setFormData((prev) => ({
+        ...prev,
+        arbiterAddress: customArbiterAddress,
+      }));
+    } else {
+      // Direct address input (for custom arbiter)
+      setCustomArbiterAddress(arbiterAddress);
+      setFormData((prev) => ({ ...prev, arbiterAddress }));
+      setErrors((prev) => ({ ...prev, arbiterAddress: '' }));
+    }
+  };
+
+  // Handle custom arbiter address input
+  const handleCustomArbiterChange = (address: string) => {
+    setCustomArbiterAddress(address);
+    setFormData((prev) => ({ ...prev, arbiterAddress: address }));
+    setErrors((prev) => ({ ...prev, arbiterAddress: '' }));
   };
 
   const getExpirationTime = () => {
@@ -232,15 +309,19 @@ export function useCreateAllocation() {
         message: `Successfully created allocation with hash: ${result.hash}`,
       });
 
+      // Reset form but keep Tribunal as default arbiter
       setFormData({
         lockId: '',
         amount: '',
-        arbiterAddress: '',
+        arbiterAddress: TRIBUNAL_ADDRESS,
         nonce: '',
         expiration: '',
         witnessHash: '',
         witnessTypestring: '',
       });
+      setSelectedArbiter(KNOWN_ARBITERS[0]);
+      setShowCustomArbiter(false);
+      setCustomArbiterAddress('');
       setShowWitnessFields(false);
       generateNewNonce();
     } catch (error) {
@@ -274,5 +355,12 @@ export function useCreateAllocation() {
     handleSubmit,
     generateNewNonce,
     setShowWitnessFields,
+    // Arbiter selection exports
+    selectedArbiter,
+    showCustomArbiter,
+    customArbiterAddress,
+    arbiterOptions,
+    handleArbiterChange,
+    handleCustomArbiterChange,
   };
 }

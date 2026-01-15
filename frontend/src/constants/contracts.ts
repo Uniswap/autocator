@@ -21,6 +21,45 @@ export const HYBRID_ALLOCATOR_ADDRESS =
 export const TRIBUNAL_ADDRESS =
   '0x000000000000790009689f43bAedb61D67D45bB8' as const;
 
+// Known arbiters that users can select from
+export interface ArbiterOption {
+  address: `0x${string}`;
+  name: string;
+  description: string;
+  isCustom?: boolean;
+}
+
+export const KNOWN_ARBITERS: ArbiterOption[] = [
+  {
+    address: TRIBUNAL_ADDRESS,
+    name: 'Tribunal',
+    description: 'Standard arbiter for cross-chain swaps',
+  },
+];
+
+// Special option for custom arbiter input
+export const CUSTOM_ARBITER_OPTION: ArbiterOption = {
+  address: '0x0000000000000000000000000000000000000000',
+  name: 'Custom',
+  description: 'Enter a custom arbiter address',
+  isCustom: true,
+};
+
+// Helper to get arbiter by address
+export function getArbiterByAddress(
+  address: string
+): ArbiterOption | undefined {
+  const normalizedAddress = address.toLowerCase();
+  return KNOWN_ARBITERS.find(
+    (arbiter) => arbiter.address.toLowerCase() === normalizedAddress
+  );
+}
+
+// Helper to check if address is a known arbiter
+export function isKnownArbiter(address: string): boolean {
+  return getArbiterByAddress(address) !== undefined;
+}
+
 // Chain configurations
 export const SUPPORTED_CHAINS = {
   [mainnet.id]: {
