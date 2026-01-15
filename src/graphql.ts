@@ -476,6 +476,79 @@ export const GET_ALLOCATOR_INSTANCE = `
   }
 `;
 
+// Query to check if a compact has been registered on-chain (finalized)
+// Uses timestamp_lte filter to only return registrations older than finalization threshold
+export const GET_FINALIZED_REGISTERED_COMPACT = `
+  query GetFinalizedRegisteredCompact($claimHash: String!, $chainId: BigInt!, $finalizationTimestamp: BigInt!) {
+    registeredCompacts(
+      where: {
+        claimHash: $claimHash,
+        chainId: $chainId,
+        timestamp_lte: $finalizationTimestamp
+      },
+      limit: 1
+    ) {
+      items {
+        claimHash
+        sponsor
+        timestamp
+        blockNumber
+        typehash
+      }
+    }
+  }
+`;
+
+// Response type for registered compact query
+export interface FinalizedRegisteredCompactResponse {
+  registeredCompacts: {
+    items: Array<{
+      claimHash: string;
+      sponsor: string;
+      timestamp: string;
+      blockNumber: string;
+      typehash: string;
+    }>;
+  };
+}
+
+/**
+ * Check if a compact has been registered on-chain AND is finalized.
+ *
+ * IMPORTANT: This function throws on error to ensure fail-closed behavior.
+ * The allocator must verify on-chain registration before signing.
+ *
+ * Only returns registrations that are older than the chain's finalization
+ * threshold to protect against reorgs.
+ *
+ * @param claimHash - The claim hash of the compact
+ * @param chainId - The chain ID
+ * @returns The registered compact details, or null if not registered/finalized
+ * @throws Error if the indexer cannot be reached
+ */
+export async function getFinalizedRegisteredCompact(
+  claimHash: string,
+  chainId: string
+): Promise<
+  FinalizedRegisteredCompactResponse['registeredCompacts']['items'][0] | null
+> {
+  // Calculate finalization timestamp (current time - finalization threshold)
+  const { finalizationTimestamp } = calculateQueryTimestamps(chainId);
+
+  // Let errors propagate (fail-closed)
+  const response =
+    await graphqlClient.request<FinalizedRegisteredCompactResponse>(
+      GET_FINALIZED_REGISTERED_COMPACT,
+      {
+        claimHash,
+        chainId,
+        finalizationTimestamp: finalizationTimestamp.toString(),
+      }
+    );
+
+  return response.registeredCompacts.items[0] || null;
+}
+
 // Simple health check query (minimal query to test connectivity)
 const HEALTH_CHECK_QUERY = `
   query HealthCheck {

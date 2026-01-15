@@ -117,13 +117,20 @@ export function setupGraphQLMocks(): void {
         consumedNonce: null, // Nonce not consumed
       };
     }
-    // Handle CheckOnchainRegistration query
+    // Handle CheckOnchainRegistration query (singular - legacy)
     if (
       query.includes('CheckOnchainRegistration') ||
-      query.includes('registeredCompact')
+      (query.includes('registeredCompact') &&
+        !query.includes('registeredCompacts'))
     ) {
       return {
         registeredCompact: null, // No onchain registration
+      };
+    }
+    // Handle GetFinalizedRegisteredCompact query (plural - new)
+    if (query.includes('registeredCompacts')) {
+      return {
+        registeredCompacts: { items: [] }, // No finalized registrations by default
       };
     }
     // Handle health check query

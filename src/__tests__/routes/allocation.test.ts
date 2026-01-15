@@ -630,23 +630,98 @@ describe('Allocation Routes', () => {
       });
     });
 
-    describe('Transaction allocation (not yet implemented)', () => {
-      it('should return 501 for transaction allocation requests', async () => {
+    describe('On-chain registration allocation', () => {
+      it('should reject if compact is not registered (returns null from indexer)', async () => {
+        // Use an ON_CHAIN nonce for on-chain allocation
+        const freshCompact = getFreshBatchCompact();
+        const sponsor = freshCompact.sponsor;
+        const onChainNonce = constructHybridNonce(
+          NonceCommand.ON_CHAIN,
+          sponsor,
+          BigInt(9999)
+        );
+        freshCompact.nonce = hybridNonceToHex(onChainNonce);
+
         const response = await server.inject({
           method: 'POST',
           url: '/allocation',
           payload: {
-            type: 'transaction',
+            type: 'onchain',
             chainId: '1',
-            transactionHash:
+            compact: freshCompact,
+            mandateHash:
               '0x0000000000000000000000000000000000000000000000000000000000000000',
-            compact: getFreshBatchCompact(),
+            witnessTypeString: 'Mandate mandate)',
           },
         });
 
-        expect(response.statusCode).toBe(501);
+        // The mock returns null by default (compact not registered)
+        expect(response.statusCode).toBe(400);
         const result = JSON.parse(response.payload);
-        expect(result.error).toContain('not yet implemented');
+        expect(result.error).toContain('not registered');
+      });
+
+      it('should reject if mandate hash is invalid', async () => {
+        const freshCompact = getFreshBatchCompact();
+
+        const response = await server.inject({
+          method: 'POST',
+          url: '/allocation',
+          payload: {
+            type: 'onchain',
+            chainId: '1',
+            compact: freshCompact,
+            mandateHash: '0x1234', // Too short
+            witnessTypeString: 'Mandate mandate)',
+          },
+        });
+
+        expect(response.statusCode).toBe(400);
+        const result = JSON.parse(response.payload);
+        expect(result.error).toContain('Invalid mandate hash');
+      });
+
+      it('should reject if witness type string is empty', async () => {
+        const freshCompact = getFreshBatchCompact();
+
+        const response = await server.inject({
+          method: 'POST',
+          url: '/allocation',
+          payload: {
+            type: 'onchain',
+            chainId: '1',
+            compact: freshCompact,
+            mandateHash:
+              '0x0000000000000000000000000000000000000000000000000000000000000000',
+            witnessTypeString: '', // Empty
+          },
+        });
+
+        expect(response.statusCode).toBe(400);
+        const result = JSON.parse(response.payload);
+        expect(result.error).toContain('Invalid witness type string');
+      });
+
+      it('should reject if nonce has wrong command type (not ON_CHAIN)', async () => {
+        // The fresh compact uses OFF_CHAIN by default
+        const freshCompact = getFreshBatchCompact();
+
+        const response = await server.inject({
+          method: 'POST',
+          url: '/allocation',
+          payload: {
+            type: 'onchain',
+            chainId: '1',
+            compact: freshCompact,
+            mandateHash:
+              '0x0000000000000000000000000000000000000000000000000000000000000000',
+            witnessTypeString: 'Mandate mandate)',
+          },
+        });
+
+        expect(response.statusCode).toBe(400);
+        const result = JSON.parse(response.payload);
+        expect(result.error).toContain('command mismatch');
       });
     });
   });

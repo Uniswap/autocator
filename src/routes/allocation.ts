@@ -22,7 +22,11 @@ import {
   type Permit2Message,
   type DepositCommitmentDelta,
 } from '../validation';
-import { ensureIndexersHealthy, getHybridAllocation } from '../graphql';
+import {
+  ensureIndexersHealthy,
+  getHybridAllocation,
+  getFinalizedRegisteredCompact,
+} from '../graphql';
 import {
   generateBatchClaimHash,
   signBatchCompact,
@@ -65,22 +69,26 @@ interface Permit2AllocationRequest {
 }
 
 /**
- * Request Type 3: Transaction-based (Post-execution Hybrid)
- * Sponsor has already executed a deposit+register transaction
- * Submit the tx hash to get any additional allocation
+ * Request Type 3: On-chain Registration-based Allocation
+ * Sponsor has already registered a compact on-chain (via deposit+register transaction)
+ * Submit the compact pre-image to get the full allocation signature
+ *
+ * The compact must be registered AND finalized (past the finalization threshold)
+ * to protect against reorgs.
  */
-interface TransactionAllocationRequest {
-  type: 'transaction';
+interface OnChainAllocationRequest {
+  type: 'onchain';
   chainId: string;
-  transactionHash: Hex;
-  compact: BatchCompactMessage; // The compact pre-image for verification
+  compact: BatchCompactMessage; // The compact pre-image
+  mandateHash: Hex; // The mandate hash used as witness hash
+  witnessTypeString: string; // The witness type string for claim hash derivation
 }
 
 // Union type for all allocation request types
 type AllocationRequest =
   | StandardAllocationRequest
   | Permit2AllocationRequest
-  | TransactionAllocationRequest;
+  | OnChainAllocationRequest;
 
 // Response for allocation endpoint
 interface AllocationResponse {
@@ -635,18 +643,139 @@ async function handlePermit2Allocation(
 }
 
 /**
- * Handle transaction-based allocation request
- * TODO: Implement transaction lookup and verification
+ * Handle on-chain registration-based allocation request
+ *
+ * This flow handles allocations where:
+ * 1. Sponsor has already registered a compact on-chain (via deposit+register)
+ * 2. We verify the registration is finalized (past finalization threshold)
+ * 3. We verify the claim hash matches the provided compact pre-image
+ * 4. We sign the full BatchCompact (same as standard allocation)
  */
-async function handleTransactionAllocation(
-  _request: TransactionAllocationRequest,
-  _db: PGlite
+async function handleOnChainAllocation(
+  request: OnChainAllocationRequest,
+  db: PGlite
 ): Promise<AllocationResponse> {
-  // For now, throw not implemented
-  throw new Error(
-    'Transaction-based allocation not yet implemented. ' +
-      'Use type "standard" for full off-chain allocation.'
+  const { chainId, compact, mandateHash, witnessTypeString } = request;
+
+  // Validate basic request structure
+  if (
+    !mandateHash ||
+    !mandateHash.startsWith('0x') ||
+    mandateHash.length !== 66
+  ) {
+    throw new Error('Invalid mandate hash: must be 32-byte hex string');
+  }
+
+  if (!witnessTypeString || witnessTypeString.length === 0) {
+    throw new Error('Invalid witness type string: must not be empty');
+  }
+
+  // Validate arbiter
+  const arbiterValidation = validateArbiter(compact.arbiter);
+  if (!arbiterValidation.isValid) {
+    throw new Error(arbiterValidation.error || 'Invalid arbiter');
+  }
+
+  // Create a BatchCompactMessage with the mandate hash as witness
+  const compactWithWitness: BatchCompactMessage = {
+    arbiter: compact.arbiter,
+    sponsor: compact.sponsor,
+    nonce: compact.nonce,
+    expires: compact.expires,
+    commitments: compact.commitments,
+    witnessTypeString: witnessTypeString,
+    witnessHash: mandateHash,
+  };
+
+  // Validate the BatchCompact structure and allocation
+  const validationResult = await validateBatchCompact(
+    compactWithWitness,
+    chainId,
+    db
   );
+  if (!validationResult.isValid || !validationResult.validatedCompact) {
+    throw new Error(validationResult.error || 'Invalid BatchCompact');
+  }
+
+  const validatedCompact =
+    validationResult.validatedCompact as ValidatedBatchCompactMessage;
+
+  // Validate hybrid nonce structure (must be ON_CHAIN command for on-chain allocation)
+  const nonceValidation = validateHybridNonce(
+    validatedCompact.nonce,
+    validatedCompact.sponsor,
+    NonceCommand.ON_CHAIN
+  );
+  if (!nonceValidation.isValid) {
+    throw new Error(
+      nonceValidation.error || 'Invalid nonce structure for on-chain allocation'
+    );
+  }
+
+  // Generate the claim hash with mandate
+  const claimHash = generateBatchClaimHashWithMandate(
+    validatedCompact.arbiter,
+    validatedCompact.sponsor,
+    validatedCompact.nonce,
+    validatedCompact.expires,
+    validatedCompact.commitments,
+    mandateHash as Hex,
+    witnessTypeString
+  );
+
+  // Query the indexer for finalized registration
+  // This only returns if the registration is past the finalization threshold
+  const registration = await getFinalizedRegisteredCompact(claimHash, chainId);
+
+  if (!registration) {
+    throw new Error(
+      `Compact not registered or not yet finalized on chain ${chainId}. ` +
+        `Claim hash: ${claimHash}. ` +
+        `Please wait for finalization threshold to pass before requesting allocation.`
+    );
+  }
+
+  // Verify the sponsor matches the registration
+  const registeredSponsor = getAddress(registration.sponsor);
+  const requestedSponsor = getAddress(compact.sponsor);
+  if (registeredSponsor.toLowerCase() !== requestedSponsor.toLowerCase()) {
+    throw new Error(
+      `Sponsor mismatch: registered sponsor is ${registeredSponsor}, ` +
+        `but request specifies ${requestedSponsor}`
+    );
+  }
+
+  // Sign the full BatchCompact (same as standard allocation)
+  const { hash: derivedClaimHash, signature: signaturePromise } =
+    await signBatchCompact(validatedCompact, BigInt(chainId));
+  const signature = await signaturePromise;
+
+  // Sanity check: verify derived claim hash matches the one we looked up
+  if (derivedClaimHash.toLowerCase() !== claimHash.toLowerCase()) {
+    throw new Error(
+      `Claim hash mismatch: derived ${derivedClaimHash}, expected ${claimHash}. ` +
+        `This indicates a bug in claim hash derivation.`
+    );
+  }
+
+  // Store the allocation
+  await storeAllocation(db, validatedCompact, chainId, claimHash, signature);
+
+  return {
+    claimHash,
+    allocation: {
+      commitments: validatedCompact.commitments.map((c) => ({
+        lockTag: c.lockTag,
+        token: c.token,
+        amount: c.amount,
+      })),
+      nonce:
+        `0x${validatedCompact.nonce.toString(16).padStart(64, '0')}` as Hex,
+      signature,
+    },
+    message:
+      'On-chain allocation successful - signed full BatchCompact for finalized registration',
+  };
 }
 
 // ============================================================
@@ -662,7 +791,7 @@ export async function setupAllocationRoutes(
    * Unified allocation endpoint supporting three request types:
    * 1. Standard (signed BatchCompact) - Full off-chain allocation
    * 2. Permit2 - Pre-execution hybrid allocation
-   * 3. Transaction - Post-execution hybrid allocation
+   * 3. OnChain - Post-execution allocation for registered compacts
    */
   server.post<{
     Body: AllocationRequest;
@@ -682,8 +811,7 @@ export async function setupAllocationRoutes(
         if (!allocationRequest.type) {
           reply.code(400);
           return {
-            error:
-              'Request type is required (standard, permit2, or transaction)',
+            error: 'Request type is required (standard, permit2, or onchain)',
           };
         }
 
@@ -704,9 +832,9 @@ export async function setupAllocationRoutes(
             );
             break;
 
-          case 'transaction':
-            result = await handleTransactionAllocation(
-              allocationRequest as TransactionAllocationRequest,
+          case 'onchain':
+            result = await handleOnChainAllocation(
+              allocationRequest as OnChainAllocationRequest,
               server.db
             );
             break;
@@ -714,7 +842,7 @@ export async function setupAllocationRoutes(
           default:
             reply.code(400);
             return {
-              error: `Unknown request type. Valid types: standard, permit2, transaction`,
+              error: `Unknown request type. Valid types: standard, permit2, onchain`,
             };
         }
 
@@ -742,7 +870,9 @@ export async function setupAllocationRoutes(
           (error.message.includes('Invalid') ||
             error.message.includes('Insufficient') ||
             error.message.includes('mismatch') ||
-            error.message.includes('not in the allowed list'))
+            error.message.includes('not in the allowed list') ||
+            error.message.includes('not registered') ||
+            error.message.includes('Sponsor mismatch'))
         ) {
           reply.code(400);
           return { error: error.message };

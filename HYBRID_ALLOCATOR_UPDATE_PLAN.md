@@ -203,7 +203,7 @@ ALLOWED_ARBITERS=
 | Permit2 signature verification         | ✅ Complete | `verifyPermit2Signature()` in `src/crypto.ts`                               |
 | Automatic partial allocation detection | ✅ Complete | `calculateDepositCommitmentDeltas()` - lockTag-aware delta calculation      |
 | Off-chain allocation for delta         | ✅ Complete | `signHybridAllocationContext()` - signs only the excess amounts             |
-| Transaction hash lookup                | ⏳ Pending  | Returns 501 Not Implemented                                                 |
+| On-chain registration allocation       | ✅ Complete | `handleOnChainAllocation()` - signs for finalized registered compacts       |
 | Balance verification                   | ✅ Complete | Uses `validateBatchAllocation` with on-chain allocation checking            |
 | On-chain allocation checking           | ✅ Complete | `getOnChainAllocatedBalance()` in `src/graphql.ts` prevents over-allocation |
 
@@ -760,6 +760,7 @@ _Based on implementation work in Autocator repository_
   - HybridAllocationContext signing for partial allocations
 - ✅ **Unified indexer migration**: Moved from two separate indexers to a single unified indexer endpoint
 - ✅ **End-to-end Permit2 integration test**: `src/__tests__/routes/permit2-e2e.test.ts` (NEW)
+
   - Full Permit2 signature generation with test wallet
   - Tests for deposit = commitment (no delta)
   - Tests for commitment > deposit (positive delta requiring allocation)
@@ -769,10 +770,16 @@ _Based on implementation work in Autocator repository_
   - Tests for multiple commitments with partial deposits
   - Tests for indexer health check failures (503 response)
 
+- ✅ **On-chain registration allocation (`type: 'onchain'`)**: New allocation type implemented
+  - `handleOnChainAllocation()` in `src/routes/allocation.ts`
+  - `getFinalizedRegisteredCompact()` in `src/graphql.ts` - queries for finalized registrations with timestamp filter
+  - Uses `registeredCompacts` query with `timestamp_lte` filter to only return finalized registrations
+  - Verifies sponsor matches registration before signing
+  - Signs full BatchCompact (like standard allocation) once registration is confirmed
+  - Tests added in `src/__tests__/routes/allocation.test.ts`
+
 ### ⏳ Still Pending:
 
-- **Transaction-based allocation (`type: 'transaction'`)**: Query indexer for completed transaction, extract deposit amounts from logs
-- **Block consistency tracking**: May need to track block number → block hash mappings between indexers to ensure consistency
 - **README update**: Document latest API endpoints, request/response formats, and feature set
 - **Frontend hooks**: React hooks for HybridAllocator contract interaction (`useHybridAllocator.ts`)
 - **Arbiter selection UI**: Frontend component for users to select their arbiter
