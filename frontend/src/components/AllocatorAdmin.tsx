@@ -265,10 +265,9 @@ export function AllocatorAdmin() {
               href={`${chainConfig?.blockExplorer}/address/${allocatorAddress}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[#00ff00] hover:underline font-mono text-xs"
+              className="text-[#00ff00] hover:underline font-mono text-xs break-all"
             >
-              {allocatorAddress.slice(0, 6)}...
-              {allocatorAddress.slice(-4)}
+              {allocatorAddress}
             </a>
           </div>
           <div className="flex justify-between">
@@ -279,14 +278,14 @@ export function AllocatorAdmin() {
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Owner:</span>
-            <span className="text-white font-mono text-xs">
-              {owner?.slice(0, 6)}...{owner?.slice(-4)}
+            <span className="text-white font-mono text-xs break-all">
+              {owner}
             </span>
           </div>
           <div className="flex justify-between">
             <span className="text-gray-400">Connected:</span>
-            <span className="text-white font-mono text-xs">
-              {connectedAddress?.slice(0, 6)}...{connectedAddress?.slice(-4)}
+            <span className="text-white font-mono text-xs break-all">
+              {connectedAddress}
             </span>
           </div>
           <div className="flex justify-between">
@@ -294,9 +293,8 @@ export function AllocatorAdmin() {
             {serverSignerLoading ? (
               <span className="text-gray-500 text-xs">Loading...</span>
             ) : serverSigningAddress ? (
-              <span className="text-[#00ff00] font-mono text-xs">
-                {serverSigningAddress.slice(0, 6)}...
-                {serverSigningAddress.slice(-4)}
+              <span className="text-[#00ff00] font-mono text-xs break-all">
+                {serverSigningAddress}
               </span>
             ) : (
               <span className="text-red-500 text-xs">Not configured</span>
@@ -372,8 +370,8 @@ export function AllocatorAdmin() {
                           key={idx}
                           className="flex items-center justify-between gap-2 p-2 bg-gray-800/50 rounded"
                         >
-                          <span className="text-gray-300 font-mono text-xs">
-                            {staleSigner.slice(0, 10)}...{staleSigner.slice(-8)}
+                          <span className="text-gray-300 font-mono text-xs break-all">
+                            {staleSigner}
                           </span>
                           <button
                             onClick={() => {
@@ -381,7 +379,7 @@ export function AllocatorAdmin() {
                               removeSigner(staleSigner);
                             }}
                             disabled={removePending || removeConfirming}
-                            className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs rounded transition-colors"
+                            className="px-3 py-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 disabled:text-gray-500 text-white text-xs rounded transition-colors flex-shrink-0"
                           >
                             {removePending || removeConfirming
                               ? '...'
@@ -545,15 +543,14 @@ export function AllocatorAdmin() {
                     </span>
                   </div>
                   {signers.length > 0 ? (
-                    <div className="flex flex-wrap gap-1">
+                    <div className="space-y-1">
                       {signers.map((signer, idx) => (
-                        <span
+                        <div
                           key={idx}
-                          className="px-2 py-0.5 bg-gray-800 rounded text-xs font-mono text-gray-300"
-                          title={signer}
+                          className="px-2 py-1 bg-gray-800 rounded text-xs font-mono text-gray-300 break-all"
                         >
-                          {signer.slice(0, 6)}...{signer.slice(-4)}
-                        </span>
+                          {signer}
+                        </div>
                       ))}
                     </div>
                   ) : (

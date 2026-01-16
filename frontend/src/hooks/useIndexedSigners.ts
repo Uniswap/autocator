@@ -94,14 +94,14 @@ export function useIndexedSigners(): UseIndexedSignersResult {
     setError(null);
 
     try {
-      // Fetch both signers and all signer changes
+      // Fetch both signers and all signer changes from the unified indexer
       const [signersRes, changesRes] = await Promise.all([
-        fetch(config.hybridAllocatorIndexerUrl, {
+        fetch(config.graphqlUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: SIGNERS_QUERY }),
         }),
-        fetch(config.hybridAllocatorIndexerUrl, {
+        fetch(config.graphqlUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ query: ALL_SIGNER_CHANGES_QUERY }),
@@ -173,7 +173,7 @@ export function useChainSignerChanges(chainId?: bigint): {
     setError(null);
 
     try {
-      const res = await fetch(config.hybridAllocatorIndexerUrl, {
+      const res = await fetch(config.graphqlUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
