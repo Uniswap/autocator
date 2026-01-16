@@ -1,4 +1,11 @@
-import { useReadContract, useChainId } from 'wagmi';
+import {
+  useReadContract,
+  useChainId,
+  useWriteContract,
+  useAccount,
+  useWaitForTransactionReceipt,
+} from 'wagmi';
+import { useState, useCallback, useMemo } from 'react';
 import {
   HYBRID_ALLOCATOR_ADDRESS,
   HYBRID_ALLOCATOR_ABI,
@@ -177,5 +184,333 @@ export function useHybridNonce(sponsor?: `0x${string}`) {
   return {
     generateNonce,
     generateNonceHex,
+  };
+}
+
+/**
+ * Hook to read the HybridAllocator's owner
+ */
+export function useHybridAllocatorOwner() {
+  const chainId = useChainId();
+
+  const { data, isLoading, error, refetch } = useReadContract({
+    address: HYBRID_ALLOCATOR_ADDRESS,
+    abi: HYBRID_ALLOCATOR_ABI,
+    functionName: 'owner',
+    chainId,
+  });
+
+  return {
+    owner: data as `0x${string}` | undefined,
+    isLoading,
+    error,
+    refetch,
+  };
+}
+
+/**
+ * Hook to check if the HybridAllocator is deployed on the current chain
+ */
+export function useHybridAllocatorDeployed() {
+  const chainId = useChainId();
+
+  const { data, isLoading, error } = useReadContract({
+    address: HYBRID_ALLOCATOR_ADDRESS,
+    abi: HYBRID_ALLOCATOR_ABI,
+    functionName: 'ALLOCATOR_ID',
+    chainId,
+  });
+
+  // If we can read the ALLOCATOR_ID, the contract is deployed
+  const isDeployed = !error && data !== undefined;
+
+  return {
+    isDeployed,
+    isLoading,
+    error,
+    allocatorId: data as bigint | undefined,
+  };
+}
+
+/**
+ * Hook to check if the connected account is the owner of the HybridAllocator
+ */
+export function useIsOwner() {
+  const { address } = useAccount();
+  const { owner, isLoading: ownerLoading, error } = useHybridAllocatorOwner();
+
+  const isOwner = useMemo(() => {
+    if (!address || !owner) return false;
+    return address.toLowerCase() === owner.toLowerCase();
+  }, [address, owner]);
+
+  return {
+    isOwner,
+    owner,
+    connectedAddress: address,
+    isLoading: ownerLoading,
+    error,
+  };
+}
+
+/**
+ * Hook to add a signer to the HybridAllocator (owner only)
+ */
+export function useAddSigner() {
+  const chainId = useChainId();
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+
+  const {
+    writeContractAsync,
+    isPending: isWritePending,
+    error: writeError,
+    reset,
+  } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+    chainId,
+  });
+
+  const addSigner = useCallback(
+    async (signerAddress: `0x${string}`) => {
+      try {
+        const result = await writeContractAsync({
+          address: HYBRID_ALLOCATOR_ADDRESS,
+          abi: HYBRID_ALLOCATOR_ABI,
+          functionName: 'addSigner',
+          args: [signerAddress],
+          chainId,
+        });
+        setTxHash(result);
+        return result;
+      } catch (err) {
+        console.error('Failed to add signer:', err);
+        throw err;
+      }
+    },
+    [writeContractAsync, chainId]
+  );
+
+  return {
+    addSigner,
+    isWritePending,
+    isConfirming,
+    isSuccess,
+    error: writeError,
+    txHash,
+    reset: useCallback(() => {
+      reset();
+      setTxHash(undefined);
+    }, [reset]),
+  };
+}
+
+/**
+ * Hook to remove a signer from the HybridAllocator (owner only)
+ */
+export function useRemoveSigner() {
+  const chainId = useChainId();
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+
+  const {
+    writeContractAsync,
+    isPending: isWritePending,
+    error: writeError,
+    reset,
+  } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+    chainId,
+  });
+
+  const removeSigner = useCallback(
+    async (signerAddress: `0x${string}`) => {
+      try {
+        const result = await writeContractAsync({
+          address: HYBRID_ALLOCATOR_ADDRESS,
+          abi: HYBRID_ALLOCATOR_ABI,
+          functionName: 'removeSigner',
+          args: [signerAddress],
+          chainId,
+        });
+        setTxHash(result);
+        return result;
+      } catch (err) {
+        console.error('Failed to remove signer:', err);
+        throw err;
+      }
+    },
+    [writeContractAsync, chainId]
+  );
+
+  return {
+    removeSigner,
+    isWritePending,
+    isConfirming,
+    isSuccess,
+    error: writeError,
+    txHash,
+    reset: useCallback(() => {
+      reset();
+      setTxHash(undefined);
+    }, [reset]),
+  };
+}
+
+/**
+ * Hook to replace a signer on the HybridAllocator (owner only)
+ */
+export function useReplaceSigner() {
+  const chainId = useChainId();
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+
+  const {
+    writeContractAsync,
+    isPending: isWritePending,
+    error: writeError,
+    reset,
+  } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+    chainId,
+  });
+
+  const replaceSigner = useCallback(
+    async (oldSigner: `0x${string}`, newSigner: `0x${string}`) => {
+      try {
+        const result = await writeContractAsync({
+          address: HYBRID_ALLOCATOR_ADDRESS,
+          abi: HYBRID_ALLOCATOR_ABI,
+          functionName: 'replaceSigner',
+          args: [oldSigner, newSigner],
+          chainId,
+        });
+        setTxHash(result);
+        return result;
+      } catch (err) {
+        console.error('Failed to replace signer:', err);
+        throw err;
+      }
+    },
+    [writeContractAsync, chainId]
+  );
+
+  return {
+    replaceSigner,
+    isWritePending,
+    isConfirming,
+    isSuccess,
+    error: writeError,
+    txHash,
+    reset: useCallback(() => {
+      reset();
+      setTxHash(undefined);
+    }, [reset]),
+  };
+}
+
+/**
+ * Hook to propose a new owner for the HybridAllocator (owner only)
+ */
+export function useProposeOwner() {
+  const chainId = useChainId();
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+
+  const {
+    writeContractAsync,
+    isPending: isWritePending,
+    error: writeError,
+    reset,
+  } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+    chainId,
+  });
+
+  const proposeOwner = useCallback(
+    async (newOwner: `0x${string}`) => {
+      try {
+        const result = await writeContractAsync({
+          address: HYBRID_ALLOCATOR_ADDRESS,
+          abi: HYBRID_ALLOCATOR_ABI,
+          functionName: 'proposeOwnerReplacement',
+          args: [newOwner],
+          chainId,
+        });
+        setTxHash(result);
+        return result;
+      } catch (err) {
+        console.error('Failed to propose owner:', err);
+        throw err;
+      }
+    },
+    [writeContractAsync, chainId]
+  );
+
+  return {
+    proposeOwner,
+    isWritePending,
+    isConfirming,
+    isSuccess,
+    error: writeError,
+    txHash,
+    reset: useCallback(() => {
+      reset();
+      setTxHash(undefined);
+    }, [reset]),
+  };
+}
+
+/**
+ * Hook to accept owner replacement on the HybridAllocator
+ */
+export function useAcceptOwnership() {
+  const chainId = useChainId();
+  const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
+
+  const {
+    writeContractAsync,
+    isPending: isWritePending,
+    error: writeError,
+    reset,
+  } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
+    hash: txHash,
+    chainId,
+  });
+
+  const acceptOwnership = useCallback(async () => {
+    try {
+      const result = await writeContractAsync({
+        address: HYBRID_ALLOCATOR_ADDRESS,
+        abi: HYBRID_ALLOCATOR_ABI,
+        functionName: 'acceptOwnerReplacement',
+        args: [],
+        chainId,
+      });
+      setTxHash(result);
+      return result;
+    } catch (err) {
+      console.error('Failed to accept ownership:', err);
+      throw err;
+    }
+  }, [writeContractAsync, chainId]);
+
+  return {
+    acceptOwnership,
+    isWritePending,
+    isConfirming,
+    isSuccess,
+    error: writeError,
+    txHash,
+    reset: useCallback(() => {
+      reset();
+      setTxHash(undefined);
+    }, [reset]),
   };
 }

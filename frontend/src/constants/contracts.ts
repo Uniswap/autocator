@@ -290,12 +290,63 @@ export const HYBRID_ALLOCATOR_ABI = [
     stateMutability: 'view',
     type: 'function',
   },
+  // View owner
+  {
+    inputs: [],
+    name: 'owner',
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
   // Check if an address is an authorized signer
   {
     inputs: [{ name: 'signer', type: 'address' }],
     name: 'signers',
     outputs: [{ name: '', type: 'bool' }],
     stateMutability: 'view',
+    type: 'function',
+  },
+  // Add a signer (owner only)
+  {
+    inputs: [{ name: 'signer_', type: 'address' }],
+    name: 'addSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Remove a signer (owner only)
+  {
+    inputs: [{ name: 'signer_', type: 'address' }],
+    name: 'removeSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Replace a signer (owner only)
+  {
+    inputs: [
+      { name: 'oldSigner_', type: 'address' },
+      { name: 'newSigner_', type: 'address' },
+    ],
+    name: 'replaceSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Propose owner replacement
+  {
+    inputs: [{ name: 'newOwner_', type: 'address' }],
+    name: 'proposeOwnerReplacement',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Accept owner replacement
+  {
+    inputs: [],
+    name: 'acceptOwnerReplacement',
+    outputs: [],
+    stateMutability: 'nonpayable',
     type: 'function',
   },
   // Allocate and register (on-chain allocation)

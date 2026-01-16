@@ -3,6 +3,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WagmiProvider } from 'wagmi';
 import '@rainbow-me/rainbowkit/styles.css';
 import { useState } from 'react';
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Link,
+  useLocation,
+} from 'react-router-dom';
 
 import { config } from './config/wagmi';
 import { WalletConnect } from './components/WalletConnect';
@@ -11,6 +18,7 @@ import HealthCheck from './components/HealthCheck';
 import { DepositForm } from './components/DepositForm';
 import { NotificationProvider } from './context/NotificationProvider';
 import APISection from './components/APISection';
+import AllocatorAdmin from './components/AllocatorAdmin';
 
 // Create a client
 const queryClient = new QueryClient({
@@ -30,19 +38,22 @@ const customTheme = darkTheme({
   overlayBlur: 'small',
 });
 
-function AppContent() {
-  const [isHealthy, setIsHealthy] = useState(true);
+function Layout({ children }: { children: React.ReactNode }) {
+  const location = useLocation();
+  const isAdmin = location.pathname === '/admin';
 
   return (
     <div className="h-screen flex flex-col bg-[#0a0a0a]">
       <header className="flex-none bg-[#0a0a0a] border-b border-gray-800">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-black font-monaco">
-              <span className="text-[#00ff00]">Auto</span>
-              <span className="text-white">cator</span>
-              <span className="text-white"> 🚗</span>
-            </h1>
+            <Link to="/">
+              <h1 className="text-3xl font-black font-monaco">
+                <span className="text-[#00ff00]">Auto</span>
+                <span className="text-white">cator</span>
+                <span className="text-white"> 🚗</span>
+              </h1>
+            </Link>
             <p className="text-gray-400 text-sm mt-1">
               A server-based allocator for{' '}
               <a
@@ -57,6 +68,12 @@ function AppContent() {
             </p>
           </div>
           <div className="flex items-center gap-4">
+            <Link
+              to={isAdmin ? '/' : '/admin'}
+              className="text-gray-400 hover:text-[#00ff00] transition-colors text-sm"
+            >
+              {isAdmin ? '← Back to App' : 'Admin'}
+            </Link>
             <a
               href="https://github.com/Uniswap/autocator"
               target="_blank"
@@ -83,31 +100,66 @@ function AppContent() {
 
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="space-y-6">
-            {/* Health Check Status */}
-            <div className="mx-auto p-4 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
-              <HealthCheck onHealthStatusChange={setIsHealthy} />
-            </div>
-
-            {/* Only show these components if the server is healthy */}
-            {isHealthy && (
-              <>
-                {/* Deposit Form */}
-                <DepositForm />
-
-                {/* Balance Display */}
-                <div className="mx-auto p-6 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
-                  <BalanceDisplay />
-                </div>
-              </>
-            )}
-
-            {/* API Section - always visible */}
-            <APISection />
-          </div>
+          {children}
         </div>
       </main>
     </div>
+  );
+}
+
+function HomePage() {
+  const [isHealthy, setIsHealthy] = useState(true);
+
+  return (
+    <div className="space-y-6">
+      {/* Health Check Status */}
+      <div className="mx-auto p-4 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
+        <HealthCheck onHealthStatusChange={setIsHealthy} />
+      </div>
+
+      {/* Only show these components if the server is healthy */}
+      {isHealthy && (
+        <>
+          {/* Deposit Form */}
+          <DepositForm />
+
+          {/* Balance Display */}
+          <div className="mx-auto p-6 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
+            <BalanceDisplay />
+          </div>
+        </>
+      )}
+
+      {/* API Section - always visible */}
+      <APISection />
+    </div>
+  );
+}
+
+function AdminPage() {
+  return <AllocatorAdmin />;
+}
+
+function AppRoutes() {
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={
+          <Layout>
+            <HomePage />
+          </Layout>
+        }
+      />
+      <Route
+        path="/admin"
+        element={
+          <Layout>
+            <AdminPage />
+          </Layout>
+        }
+      />
+    </Routes>
   );
 }
 
@@ -117,7 +169,9 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider theme={customTheme}>
           <NotificationProvider>
-            <AppContent />
+            <BrowserRouter>
+              <AppRoutes />
+            </BrowserRouter>
           </NotificationProvider>
         </RainbowKitProvider>
       </QueryClientProvider>
