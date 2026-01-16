@@ -3,6 +3,19 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "pnpm": {
+    "overrides": {
+      "hono": ">=4.11.4",
+      "glob": ">=10.5.0",
+      "preact": ">=10.27.3",
+      "h3": ">=1.15.5",
+      "@babel/runtime": ">=7.26.10",
+      "@babel/helpers": ">=7.26.10",
+      "js-yaml": ">=4.1.1",
+      "brace-expansion": ">=2.0.2",
+      "vite": ">=6.4.1"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
