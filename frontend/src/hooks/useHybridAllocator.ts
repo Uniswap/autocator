@@ -6,27 +6,29 @@ import {
   useWaitForTransactionReceipt,
 } from 'wagmi';
 import { useState, useCallback, useMemo } from 'react';
-import {
-  HYBRID_ALLOCATOR_ADDRESS,
-  HYBRID_ALLOCATOR_ABI,
-} from '../constants/contracts';
+import { HYBRID_ALLOCATOR_ABI } from '../constants/contracts';
+import { useAllocatorConfig } from './useAllocatorConfig';
 
 /**
  * Hook to read the HybridAllocator's allocator ID for the current chain
  */
 export function useHybridAllocatorId() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
 
   const { data, isLoading, error, refetch } = useReadContract({
-    address: HYBRID_ALLOCATOR_ADDRESS,
+    address: allocatorAddress ?? undefined,
     abi: HYBRID_ALLOCATOR_ABI,
     functionName: 'ALLOCATOR_ID',
     chainId,
+    query: {
+      enabled: !!allocatorAddress,
+    },
   });
 
   return {
     allocatorId: data as bigint | undefined,
-    isLoading,
+    isLoading: isLoading || !allocatorAddress,
     error,
     refetch,
   };
@@ -37,21 +39,22 @@ export function useHybridAllocatorId() {
  */
 export function useIsSigner(signerAddress?: `0x${string}`) {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
 
   const { data, isLoading, error, refetch } = useReadContract({
-    address: HYBRID_ALLOCATOR_ADDRESS,
+    address: allocatorAddress ?? undefined,
     abi: HYBRID_ALLOCATOR_ABI,
     functionName: 'signers',
     args: signerAddress ? [signerAddress] : undefined,
     chainId,
     query: {
-      enabled: !!signerAddress,
+      enabled: !!signerAddress && !!allocatorAddress,
     },
   });
 
   return {
     isSigner: data as boolean | undefined,
-    isLoading,
+    isLoading: isLoading || !allocatorAddress,
     error,
     refetch,
   };
@@ -62,22 +65,23 @@ export function useIsSigner(signerAddress?: `0x${string}`) {
  */
 export function useAttestation(attestationHash?: `0x${string}`) {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
 
   const { data, isLoading, error, refetch } = useReadContract({
-    address: HYBRID_ALLOCATOR_ADDRESS,
+    address: allocatorAddress ?? undefined,
     abi: HYBRID_ALLOCATOR_ABI,
     functionName: 'attestations',
     args: attestationHash ? [attestationHash] : undefined,
     chainId,
     query: {
-      enabled: !!attestationHash,
+      enabled: !!attestationHash && !!allocatorAddress,
     },
   });
 
   return {
     expires: data as bigint | undefined,
     isValid: data ? (data as bigint) > 0n : false,
-    isLoading,
+    isLoading: isLoading || !allocatorAddress,
     error,
     refetch,
   };
@@ -192,17 +196,21 @@ export function useHybridNonce(sponsor?: `0x${string}`) {
  */
 export function useHybridAllocatorOwner() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
 
   const { data, isLoading, error, refetch } = useReadContract({
-    address: HYBRID_ALLOCATOR_ADDRESS,
+    address: allocatorAddress ?? undefined,
     abi: HYBRID_ALLOCATOR_ABI,
     functionName: 'owner',
     chainId,
+    query: {
+      enabled: !!allocatorAddress,
+    },
   });
 
   return {
     owner: data as `0x${string}` | undefined,
-    isLoading,
+    isLoading: isLoading || !allocatorAddress,
     error,
     refetch,
   };
@@ -213,12 +221,16 @@ export function useHybridAllocatorOwner() {
  */
 export function useHybridAllocatorDeployed() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
 
   const { data, isLoading, error } = useReadContract({
-    address: HYBRID_ALLOCATOR_ADDRESS,
+    address: allocatorAddress ?? undefined,
     abi: HYBRID_ALLOCATOR_ABI,
     functionName: 'ALLOCATOR_ID',
     chainId,
+    query: {
+      enabled: !!allocatorAddress,
+    },
   });
 
   // If we can read the ALLOCATOR_ID, the contract is deployed
@@ -226,7 +238,7 @@ export function useHybridAllocatorDeployed() {
 
   return {
     isDeployed,
-    isLoading,
+    isLoading: isLoading || !allocatorAddress,
     error,
     allocatorId: data as bigint | undefined,
   };
@@ -258,6 +270,7 @@ export function useIsOwner() {
  */
 export function useAddSigner() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const {
@@ -274,9 +287,12 @@ export function useAddSigner() {
 
   const addSigner = useCallback(
     async (signerAddress: `0x${string}`) => {
+      if (!allocatorAddress) {
+        throw new Error('Allocator address not available');
+      }
       try {
         const result = await writeContractAsync({
-          address: HYBRID_ALLOCATOR_ADDRESS,
+          address: allocatorAddress,
           abi: HYBRID_ALLOCATOR_ABI,
           functionName: 'addSigner',
           args: [signerAddress],
@@ -289,7 +305,7 @@ export function useAddSigner() {
         throw err;
       }
     },
-    [writeContractAsync, chainId]
+    [writeContractAsync, chainId, allocatorAddress]
   );
 
   return {
@@ -311,6 +327,7 @@ export function useAddSigner() {
  */
 export function useRemoveSigner() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const {
@@ -327,9 +344,12 @@ export function useRemoveSigner() {
 
   const removeSigner = useCallback(
     async (signerAddress: `0x${string}`) => {
+      if (!allocatorAddress) {
+        throw new Error('Allocator address not available');
+      }
       try {
         const result = await writeContractAsync({
-          address: HYBRID_ALLOCATOR_ADDRESS,
+          address: allocatorAddress,
           abi: HYBRID_ALLOCATOR_ABI,
           functionName: 'removeSigner',
           args: [signerAddress],
@@ -342,7 +362,7 @@ export function useRemoveSigner() {
         throw err;
       }
     },
-    [writeContractAsync, chainId]
+    [writeContractAsync, chainId, allocatorAddress]
   );
 
   return {
@@ -364,6 +384,7 @@ export function useRemoveSigner() {
  */
 export function useReplaceSigner() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const {
@@ -380,9 +401,12 @@ export function useReplaceSigner() {
 
   const replaceSigner = useCallback(
     async (oldSigner: `0x${string}`, newSigner: `0x${string}`) => {
+      if (!allocatorAddress) {
+        throw new Error('Allocator address not available');
+      }
       try {
         const result = await writeContractAsync({
-          address: HYBRID_ALLOCATOR_ADDRESS,
+          address: allocatorAddress,
           abi: HYBRID_ALLOCATOR_ABI,
           functionName: 'replaceSigner',
           args: [oldSigner, newSigner],
@@ -395,7 +419,7 @@ export function useReplaceSigner() {
         throw err;
       }
     },
-    [writeContractAsync, chainId]
+    [writeContractAsync, chainId, allocatorAddress]
   );
 
   return {
@@ -417,6 +441,7 @@ export function useReplaceSigner() {
  */
 export function useProposeOwner() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const {
@@ -433,9 +458,12 @@ export function useProposeOwner() {
 
   const proposeOwner = useCallback(
     async (newOwner: `0x${string}`) => {
+      if (!allocatorAddress) {
+        throw new Error('Allocator address not available');
+      }
       try {
         const result = await writeContractAsync({
-          address: HYBRID_ALLOCATOR_ADDRESS,
+          address: allocatorAddress,
           abi: HYBRID_ALLOCATOR_ABI,
           functionName: 'proposeOwnerReplacement',
           args: [newOwner],
@@ -448,7 +476,7 @@ export function useProposeOwner() {
         throw err;
       }
     },
-    [writeContractAsync, chainId]
+    [writeContractAsync, chainId, allocatorAddress]
   );
 
   return {
@@ -470,6 +498,7 @@ export function useProposeOwner() {
  */
 export function useAcceptOwnership() {
   const chainId = useChainId();
+  const { allocatorAddress } = useAllocatorConfig();
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const {
@@ -485,9 +514,12 @@ export function useAcceptOwnership() {
   });
 
   const acceptOwnership = useCallback(async () => {
+    if (!allocatorAddress) {
+      throw new Error('Allocator address not available');
+    }
     try {
       const result = await writeContractAsync({
-        address: HYBRID_ALLOCATOR_ADDRESS,
+        address: allocatorAddress,
         abi: HYBRID_ALLOCATOR_ABI,
         functionName: 'acceptOwnerReplacement',
         args: [],
@@ -499,7 +531,7 @@ export function useAcceptOwnership() {
       console.error('Failed to accept ownership:', err);
       throw err;
     }
-  }, [writeContractAsync, chainId]);
+  }, [writeContractAsync, chainId, allocatorAddress]);
 
   return {
     acceptOwnership,

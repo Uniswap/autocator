@@ -8,10 +8,8 @@ import {
   useRemoveSigner,
   useReplaceSigner,
 } from '../hooks/useHybridAllocator';
-import {
-  HYBRID_ALLOCATOR_ADDRESS,
-  SUPPORTED_CHAINS,
-} from '../constants/contracts';
+import { SUPPORTED_CHAINS } from '../constants/contracts';
+import { useAllocatorConfig } from '../hooks/useAllocatorConfig';
 import {
   useIndexedSigners,
   computeActiveSignersForChain,
@@ -47,6 +45,9 @@ export function AllocatorAdmin() {
   const chainConfig =
     SUPPORTED_CHAINS[chainId as keyof typeof SUPPORTED_CHAINS];
   const { switchChain, isPending: isSwitchingChain } = useSwitchChain();
+
+  // Get allocator address from backend config
+  const { allocatorAddress, isLoading: configLoading } = useAllocatorConfig();
 
   // Contract status
   const {
@@ -187,7 +188,7 @@ export function AllocatorAdmin() {
   };
 
   // Loading state
-  if (deployedLoading || ownerLoading) {
+  if (deployedLoading || ownerLoading || configLoading) {
     return (
       <div className="p-6 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
         <h2 className="text-xl font-bold text-white mb-4">
@@ -218,7 +219,7 @@ export function AllocatorAdmin() {
   }
 
   // Contract not deployed
-  if (!isDeployed) {
+  if (!isDeployed || !allocatorAddress) {
     return (
       <div className="p-6 bg-[#0a0a0a] rounded-lg shadow-xl border border-gray-800">
         <h2 className="text-xl font-bold text-white mb-4">
@@ -229,10 +230,12 @@ export function AllocatorAdmin() {
             ❌ HybridAllocator is not deployed on{' '}
             {chainConfig?.name || `chain ${chainId}`}.
           </p>
-          <p className="text-gray-400 text-sm mt-2">
-            Contract address:{' '}
-            <code className="text-gray-300">{HYBRID_ALLOCATOR_ADDRESS}</code>
-          </p>
+          {allocatorAddress && (
+            <p className="text-gray-400 text-sm mt-2">
+              Contract address:{' '}
+              <code className="text-gray-300">{allocatorAddress}</code>
+            </p>
+          )}
         </div>
       </div>
     );
@@ -259,13 +262,13 @@ export function AllocatorAdmin() {
           <div className="flex justify-between">
             <span className="text-gray-400">Contract:</span>
             <a
-              href={`${chainConfig?.blockExplorer}/address/${HYBRID_ALLOCATOR_ADDRESS}`}
+              href={`${chainConfig?.blockExplorer}/address/${allocatorAddress}`}
               target="_blank"
               rel="noopener noreferrer"
               className="text-[#00ff00] hover:underline font-mono text-xs"
             >
-              {HYBRID_ALLOCATOR_ADDRESS.slice(0, 6)}...
-              {HYBRID_ALLOCATOR_ADDRESS.slice(-4)}
+              {allocatorAddress.slice(0, 6)}...
+              {allocatorAddress.slice(-4)}
             </a>
           </div>
           <div className="flex justify-between">

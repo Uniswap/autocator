@@ -7,9 +7,15 @@
 
 import { getAddress } from 'viem';
 
-// Contract addresses (same on all chains)
-export const HYBRID_ALLOCATOR_ADDRESS =
-  '0xa110cE8BFD2Bb33fd7dB4804f9b8736fE4d05A4B' as const;
+// Get allocator address from environment (required)
+// This is the HybridAllocator contract address
+export function getAllocatorAddress(): string {
+  const address = process.env.ALLOCATOR_ADDRESS;
+  if (!address) {
+    throw new Error('ALLOCATOR_ADDRESS environment variable is required');
+  }
+  return getAddress(address);
+}
 
 export const TRIBUNAL_ADDRESS =
   '0x000000000000790009689f43bAedb61D67D45bB8' as const;

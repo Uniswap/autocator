@@ -17,6 +17,7 @@ import { BalanceDisplay } from './components/BalanceDisplay';
 import HealthCheck from './components/HealthCheck';
 import { DepositForm } from './components/DepositForm';
 import { NotificationProvider } from './context/NotificationProvider';
+import { AllocatorConfigProvider } from './contexts/AllocatorConfigProvider';
 import APISection from './components/APISection';
 import AllocatorAdmin from './components/AllocatorAdmin';
 
@@ -169,9 +170,11 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <RainbowKitProvider theme={customTheme}>
           <NotificationProvider>
-            <BrowserRouter>
-              <AppRoutes />
-            </BrowserRouter>
+            <AllocatorConfigProvider>
+              <BrowserRouter>
+                <AppRoutes />
+              </BrowserRouter>
+            </AllocatorConfigProvider>
           </NotificationProvider>
         </RainbowKitProvider>
       </QueryClientProvider>

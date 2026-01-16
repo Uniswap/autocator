@@ -32,7 +32,7 @@ import {
 } from '../../validation/types';
 import {
   TRIBUNAL_ADDRESS,
-  HYBRID_ALLOCATOR_ADDRESS,
+  getAllocatorAddress,
   initializeAllowedArbiters,
 } from '../../validation/arbiter';
 import {
@@ -250,7 +250,7 @@ function createFreshPermit2Request(options: {
     nonce: counter.toString(), // Permit2 nonce (different from compact nonce)
     deadline: (Math.floor(Date.now() / 1000) + 3600).toString(),
     witness: {
-      activator: HYBRID_ALLOCATOR_ADDRESS,
+      activator: getAllocatorAddress(),
       ids,
       compact,
     },
@@ -682,7 +682,7 @@ describe('Permit2 End-to-End Allocation Tests', () => {
         nonce: counter.toString(),
         deadline: (Math.floor(Date.now() / 1000) + 3600).toString(),
         witness: {
-          activator: HYBRID_ALLOCATOR_ADDRESS,
+          activator: getAllocatorAddress(),
           ids,
           compact,
         },
@@ -793,7 +793,7 @@ describe('Permit2 End-to-End Allocation Tests', () => {
         nonce: counter.toString(),
         deadline: (Math.floor(Date.now() / 1000) + 3600).toString(),
         witness: {
-          activator: HYBRID_ALLOCATOR_ADDRESS,
+          activator: getAllocatorAddress(),
           ids,
           compact,
         },

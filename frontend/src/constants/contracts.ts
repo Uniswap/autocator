@@ -13,9 +13,8 @@ import { unichain } from '../config/wagmi';
 export const COMPACT_ADDRESS =
   '0x00000000000000171ede64904551eeDF3C6C9788' as const;
 
-// HybridAllocator is deployed at the same address on all networks
-export const HYBRID_ALLOCATOR_ADDRESS =
-  '0xa110cE8BFD2Bb33fd7dB4804f9b8736fE4d05A4B' as const;
+// NOTE: HybridAllocator address is now fetched from the backend via /health endpoint
+// Use the useAllocatorConfig() hook to get the current allocator address
 
 // Tribunal arbiter is deployed at the same address on all networks
 export const TRIBUNAL_ADDRESS =

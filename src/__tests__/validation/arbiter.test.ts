@@ -1,5 +1,5 @@
 import {
-  HYBRID_ALLOCATOR_ADDRESS,
+  getAllocatorAddress,
   TRIBUNAL_ADDRESS,
   THE_COMPACT_ADDRESS,
   initializeAllowedArbiters,
@@ -18,9 +18,13 @@ describe('Arbiter Validation', () => {
   });
 
   describe('Contract Addresses', () => {
-    it('should export correct HybridAllocator address', () => {
-      expect(HYBRID_ALLOCATOR_ADDRESS).toBe(
-        '0xa110cE8BFD2Bb33fd7dB4804f9b8736fE4d05A4B'
+    it('should get allocator address from environment', () => {
+      // The allocator address should come from ALLOCATOR_ADDRESS env var
+      const allocatorAddress = getAllocatorAddress();
+      expect(allocatorAddress).toMatch(/^0x[a-fA-F0-9]{40}$/);
+      // Verify it's the value from the env (set in test setup)
+      expect(allocatorAddress.toLowerCase()).toBe(
+        process.env.ALLOCATOR_ADDRESS!.toLowerCase()
       );
     });
 
@@ -149,7 +153,7 @@ describe('Arbiter Validation', () => {
     });
 
     it('should return false for other addresses', () => {
-      expect(isTribunal(HYBRID_ALLOCATOR_ADDRESS)).toBe(false);
+      expect(isTribunal(getAllocatorAddress())).toBe(false);
       expect(isTribunal('0x1234567890123456789012345678901234567890')).toBe(
         false
       );

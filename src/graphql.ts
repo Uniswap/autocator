@@ -67,7 +67,7 @@ export interface SupportedChainsResponse {
         allocatorId: string;
       }>;
     };
-  };
+  } | null;
 }
 
 export interface AllResourceLocksResponse {
@@ -114,6 +114,18 @@ export async function fetchAndCacheSupportedChains(
       GET_SUPPORTED_CHAINS,
       { allocator: allocatorAddress.toLowerCase() }
     );
+
+    // Handle case where allocator hasn't been registered on-chain yet
+    if (!response.allocator) {
+      // Allocator not found in indexer - this is normal for new allocators
+      // Keep existing cache if we have one, otherwise leave as null
+      if (server) {
+        server.log.info(
+          `Allocator ${allocatorAddress} not yet indexed - supported chains cache not updated`
+        );
+      }
+      return;
+    }
 
     supportedChainsCache = response.allocator.supportedChains.items.map(
       (item) => ({
