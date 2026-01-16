@@ -31,31 +31,83 @@ describe('Compact Routes', () => {
     // Initialize chain config cache
     await fetchAndCacheSupportedChains(process.env.ALLOCATOR_ADDRESS!);
 
-    // Mock GraphQL response
+    // Mock GraphQL response - handle different query types
     graphqlClient.request = async <
       V extends Variables = Variables,
       T = AccountDeltasResponse & AccountResponse,
     >(
-      _documentOrOptions: RequestDocument | RequestOptions<V, T>,
+      documentOrOptions: RequestDocument | RequestOptions<V, T>,
       ..._variablesAndRequestHeaders: unknown[]
-    ): Promise<AccountDeltasResponse & AccountResponse> => ({
-      accountDeltas: {
-        items: [],
-      },
-      account: {
-        resourceLocks: {
-          items: [
-            {
-              withdrawalStatus: 0,
-              balance: '1000000000000000000000',
+    ): Promise<T> => {
+      // Extract query string from document or options
+      const query =
+        typeof documentOrOptions === 'string'
+          ? documentOrOptions
+          : 'query' in documentOrOptions
+            ? String(documentOrOptions.query)
+            : String(documentOrOptions);
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return { allocations: { items: [] } } as T;
+      }
+
+      // Handle GetSupportedChains query
+      if (query.includes('GetSupportedChains')) {
+        return {
+          allocator: {
+            supportedChains: {
+              items: [
+                { chainId: '1', allocatorId: '1' },
+                { chainId: '10', allocatorId: '1' },
+                { chainId: '8453', allocatorId: '1' },
+              ],
             },
-          ],
-        },
-        claims: {
+          },
+        } as T;
+      }
+
+      // Handle CheckConsumedNonce query
+      if (
+        query.includes('CheckConsumedNonce') ||
+        query.includes('consumedNonce')
+      ) {
+        return { consumedNonce: null } as T;
+      }
+
+      // Handle GetFinalizedRegisteredCompact query
+      if (query.includes('registeredCompacts')) {
+        return { registeredCompacts: { items: [] } } as T;
+      }
+
+      // Handle health check query
+      if (query.includes('HealthCheck') || query.includes('__typename')) {
+        return { __typename: 'Query' } as T;
+      }
+
+      // Default response for compact details (GetDetails)
+      return {
+        accountDeltas: {
           items: [],
         },
-      },
-    });
+        account: {
+          resourceLocks: {
+            items: [
+              {
+                withdrawalStatus: 0,
+                balance: '1000000000000000000000',
+              },
+            ],
+          },
+          claims: {
+            items: [],
+          },
+        },
+      } as T;
+    };
   });
 
   afterEach(async () => {

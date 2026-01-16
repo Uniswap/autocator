@@ -10,12 +10,7 @@ import {
   ValidatedMultichainCompactMessage,
   ValidatedCompactMessage,
 } from '../../validation/types';
-import {
-  graphqlClient,
-  AccountDeltasResponse,
-  AccountResponse,
-  fetchAndCacheSupportedChains,
-} from '../../graphql';
+import { graphqlClient, fetchAndCacheSupportedChains } from '../../graphql';
 import { setupGraphQLMocks } from '../utils/graphql-mock';
 import { getFreshCompact } from '../utils/test-server';
 
@@ -588,8 +583,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -606,7 +617,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Validate for chain 10
       const result = await validateMultichainAllocation(
@@ -708,8 +720,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - exactly 2 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -726,7 +754,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total: 0.5 + 0.7 + 0.8 = 2.0 ETH - should be valid
       const result = await validateMultichainAllocation(
@@ -779,8 +808,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - only 2 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -797,7 +842,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total would be: 1.5 + 1 = 2.5 ETH - should fail
       const result = await validateMultichainAllocation(
@@ -845,31 +891,46 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
 
       // Mock different balances for different locks
       let requestCount = 0;
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => {
-          requestCount++;
-          const balance =
-            requestCount === 1 ? '1500000000000000000' : '2500000000000000000';
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
 
-          return {
-            accountDeltas: {
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        requestCount++;
+        const balance =
+          requestCount === 1 ? '1500000000000000000' : '2500000000000000000';
+
+        return {
+          accountDeltas: {
+            items: [],
+          },
+          account: {
+            resourceLocks: {
+              items: [
+                {
+                  withdrawalStatus: 0,
+                  balance,
+                },
+              ],
+            },
+            claims: {
               items: [],
             },
-            account: {
-              resourceLocks: {
-                items: [
-                  {
-                    withdrawalStatus: 0,
-                    balance,
-                  },
-                ],
-              },
-              claims: {
-                items: [],
-              },
-            },
-          };
+          },
         };
+      };
 
       const result = await validateMultichainAllocation(
         multichainCompact,
@@ -944,8 +1005,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - 2.5 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -962,7 +1039,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total would be: 2.0 + 0.6 = 2.6 ETH > 2.5 ETH available - should fail
       const result = await validateAllocation(testCompact, chainId, db);
@@ -1097,8 +1175,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       compact.amount = '1000000000000000000'; // 1 ETH
 
       // Mock GraphQL response - only check our sponsor's balance
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -1115,7 +1209,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Should succeed since different sponsors have separate allocations
       const result = await validateAllocation(

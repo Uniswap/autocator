@@ -74,24 +74,41 @@ export async function validateAllocation(
         ? resourceLockBalance - pendingBalance
         : BigInt(0);
 
-    // Get allocated balance from database with proper hex formatting
-    const allocatedBalance = await getAllocatedBalance(
+    const processedClaimHashes = response.account.claims.items.map(
+      (item) => item.claimHash
+    );
+
+    // Get allocated balance from local database (off-chain allocations)
+    const localAllocatedBalance = await getAllocatedBalance(
       db,
       getAddress(compact.sponsor).toLowerCase(),
       chainId,
       compact.id,
-      response.account.claims.items.map((item) => item.claimHash)
+      processedClaimHashes
     );
+
+    // Get on-chain allocated balance from hybrid allocator indexer
+    // This prevents over-allocation when on-chain allocations exist
+    const onChainAllocatedBalance = await getOnChainAllocatedBalance(
+      compact.sponsor,
+      chainId,
+      compact.id,
+      processedClaimHashes
+    );
+
+    // Total allocated = local (off-chain) + on-chain
+    const totalAllocatedBalance =
+      localAllocatedBalance + onChainAllocatedBalance;
 
     // Convert amount string to BigInt for comparison
     const compactAmount = BigInt(compact.amount);
 
     // Verify sufficient balance
-    const totalNeededBalance = allocatedBalance + compactAmount;
+    const totalNeededBalance = totalAllocatedBalance + compactAmount;
     if (allocatableBalance < totalNeededBalance) {
       return {
         isValid: false,
-        error: `Insufficient allocatable balance (have ${allocatableBalance}, need ${totalNeededBalance})`,
+        error: `Insufficient allocatable balance (have ${allocatableBalance}, need ${totalNeededBalance}, local allocated: ${localAllocatedBalance}, on-chain allocated: ${onChainAllocatedBalance})`,
       };
     }
 
@@ -306,24 +323,41 @@ export async function validateMultichainAllocation(
             ? resourceLockBalance - pendingBalance
             : BigInt(0);
 
-        // Get allocated balance from database
-        const allocatedBalance = await getAllocatedBalance(
+        const processedClaimHashes = response.account.claims.items.map(
+          (item) => item.claimHash
+        );
+
+        // Get allocated balance from local database (off-chain allocations)
+        const localAllocatedBalance = await getAllocatedBalance(
           db,
           getAddress(compact.sponsor).toLowerCase(),
           chainId,
           lockId,
-          response.account.claims.items.map((item) => item.claimHash)
+          processedClaimHashes
         );
+
+        // Get on-chain allocated balance from hybrid allocator indexer
+        // This prevents over-allocation when on-chain allocations exist
+        const onChainAllocatedBalance = await getOnChainAllocatedBalance(
+          compact.sponsor,
+          chainId,
+          lockId,
+          processedClaimHashes
+        );
+
+        // Total allocated = local (off-chain) + on-chain
+        const totalAllocatedBalance =
+          localAllocatedBalance + onChainAllocatedBalance;
 
         // Convert amount string to BigInt for comparison
         const compactAmount = BigInt(commitment.amount);
 
         // Verify sufficient balance
-        const totalNeededBalance = allocatedBalance + compactAmount;
+        const totalNeededBalance = totalAllocatedBalance + compactAmount;
         if (allocatableBalance < totalNeededBalance) {
           return {
             isValid: false,
-            error: `Insufficient allocatable balance for commitment ${commitment.lockTag} (have ${allocatableBalance}, need ${totalNeededBalance})`,
+            error: `Insufficient allocatable balance for commitment ${commitment.lockTag} (have ${allocatableBalance}, need ${totalNeededBalance}, local allocated: ${localAllocatedBalance}, on-chain allocated: ${onChainAllocatedBalance})`,
           };
         }
       }

@@ -164,6 +164,18 @@ export function setupGraphQLMocks(): void {
       };
     }
 
+    // Handle GetAllocations query for on-chain allocated balance
+    // NOTE: Must check before GetAllocation since "GetAllocation" is a substring of "GetAllocations"
+    if (
+      query.includes('GetAllocations') ||
+      query.includes('allocations(where')
+    ) {
+      return { allocations: { items: [] } } as unknown as
+        | SupportedChainsResponse
+        | (AccountDeltasResponse & AccountResponse)
+        | ConsumedNonceResponse;
+    }
+
     // Default: return combined mock for generic queries (for backward compatibility with tests)
     return {
       allocator: {

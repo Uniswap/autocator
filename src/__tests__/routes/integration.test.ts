@@ -7,12 +7,7 @@ import {
   generateValidCompactSignature,
   compactToAPI,
 } from '../utils/test-server';
-import {
-  graphqlClient,
-  AccountDeltasResponse,
-  AccountResponse,
-  fetchAndCacheSupportedChains,
-} from '../../graphql';
+import { graphqlClient, fetchAndCacheSupportedChains } from '../../graphql';
 
 describe('Integration Tests', () => {
   let server: FastifyInstance;
@@ -74,27 +69,78 @@ describe('Integration Tests', () => {
 
   describe('Allocation Flow', () => {
     it('should handle complete allocation flow: nonce -> compact -> balance', async () => {
-      // Mock GraphQL response with zero allocated balance
-      graphqlClient.request = async (): Promise<
-        AccountDeltasResponse & AccountResponse
-      > => ({
-        accountDeltas: {
-          items: [],
-        },
-        account: {
-          resourceLocks: {
-            items: [
-              {
-                withdrawalStatus: 0,
-                balance: '1000000000000000000000', // 1000 ETH total
+      // Mock GraphQL response with zero allocated balance - handle different query types
+      graphqlClient.request = async (
+        document: unknown,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        // Extract query string from document
+        const query =
+          typeof document === 'string'
+            ? document
+            : (document as { source?: string }).source || String(document);
+
+        // Handle GetAllocations query for on-chain allocated balance
+        if (
+          query.includes('GetAllocations') ||
+          query.includes('allocations(where')
+        ) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle GetSupportedChains query
+        if (query.includes('GetSupportedChains')) {
+          return {
+            allocator: {
+              supportedChains: {
+                items: [
+                  { chainId: '1', allocatorId: '1' },
+                  { chainId: '10', allocatorId: '1' },
+                  { chainId: '8453', allocatorId: '1' },
+                ],
               },
-            ],
-          },
-          claims: {
+            },
+          };
+        }
+
+        // Handle CheckConsumedNonce query
+        if (
+          query.includes('CheckConsumedNonce') ||
+          query.includes('consumedNonce')
+        ) {
+          return { consumedNonce: null };
+        }
+
+        // Handle GetFinalizedRegisteredCompact query
+        if (query.includes('registeredCompacts')) {
+          return { registeredCompacts: { items: [] } };
+        }
+
+        // Handle health check query
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Default response for compact details (GetDetails)
+        return {
+          accountDeltas: {
             items: [],
           },
-        },
-      });
+          account: {
+            resourceLocks: {
+              items: [
+                {
+                  withdrawalStatus: 0,
+                  balance: '1000000000000000000000', // 1000 ETH total
+                },
+              ],
+            },
+            claims: {
+              items: [],
+            },
+          },
+        };
+      };
 
       const freshCompact = getFreshCompact();
 

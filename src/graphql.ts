@@ -451,9 +451,11 @@ export const GET_ALLOCATION_BY_CLAIM_HASH = `
 `;
 
 // Query to get allocations for a sponsor
+// Filters by expires > currentTimestamp to only include non-expired allocations
+// The caller should pass the current timestamp (adjusted for finalization)
 export const GET_ALLOCATIONS_FOR_SPONSOR = `
-  query GetAllocations($sponsor: String!, $chainId: BigInt!) {
-    allocations(where: { sponsorAddress: $sponsor, chainId: $chainId }) {
+  query GetAllocations($sponsor: String!, $chainId: BigInt!, $currentTimestamp: BigInt!) {
+    allocations(where: { sponsorAddress: $sponsor, chainId: $chainId, expires_gt: $currentTimestamp }) {
       items {
         claimHash
         nonce
@@ -588,21 +590,39 @@ export async function getHybridAllocation(
 }
 
 /**
- * Get all allocations for a sponsor from the indexer.
+ * Get all non-expired allocations for a sponsor from the indexer.
  *
  * IMPORTANT: This function throws on error to ensure fail-closed behavior.
  * The allocator must NEVER issue allocations if on-chain state cannot be verified.
  *
+ * Only returns allocations where expires > finalizationTimestamp. This means an
+ * allocation is considered "still active" if it hasn't expired from the perspective
+ * of the most recently finalized block. This protects against reorgs: if an allocation
+ * expires at time T and we're at time T+1, but the chain could reorg back to time T-1,
+ * we can't safely deallocate until we have a finalized block past time T.
+ *
+ * @param sponsor - The sponsor address
+ * @param chainId - The chain ID
+ * @returns Non-expired allocations for the sponsor (from finalized block perspective)
  * @throws Error if allocations cannot be fetched
  */
 export async function getHybridAllocationsForSponsor(
   sponsor: string,
   chainId: string
 ): Promise<HybridAllocationsResponse['allocations']['items']> {
+  // Use finalization timestamp to determine which allocations have "safely expired"
+  // finalizationTimestamp = currentTime - finalizationThreshold
+  // Only allocations with expires > finalizationTimestamp are considered active
+  const { finalizationTimestamp } = calculateQueryTimestamps(chainId);
+
   // Let errors propagate (fail-closed)
   const response = await graphqlClient.request<HybridAllocationsResponse>(
     GET_ALLOCATIONS_FOR_SPONSOR,
-    { sponsor: sponsor.toLowerCase(), chainId }
+    {
+      sponsor: sponsor.toLowerCase(),
+      chainId,
+      currentTimestamp: finalizationTimestamp.toString(),
+    }
   );
   return response.allocations.items;
 }
@@ -635,11 +655,16 @@ interface Lock {
  * This sums up all allocation amounts that:
  * 1. Match the sponsor address
  * 2. Match the lockId (lockTag + token combination)
- * 3. Haven't expired yet
+ * 3. Haven't expired from the finalized block's perspective (filtered at query level)
  * 4. Are not in the processed claims list
  *
  * IMPORTANT: This function throws on error to prevent over-allocation.
  * The allocator must NEVER issue allocations if on-chain state cannot be verified.
+ *
+ * Note: Expiration filtering is done at the GraphQL query level using the finalization
+ * timestamp (currentTime - finalizationThreshold). This ensures we only deallocate
+ * allocations that have expired from the perspective of finalized blocks, protecting
+ * against reorgs.
  *
  * @param sponsor - The sponsor address
  * @param chainId - The chain ID
@@ -654,14 +679,13 @@ export async function getOnChainAllocatedBalance(
   lockId: bigint,
   processedClaimHashes: string[]
 ): Promise<bigint> {
-  // Fetch allocations - let errors propagate (fail-closed)
+  // Fetch non-expired allocations (filtered by finalization timestamp at query level)
+  // Let errors propagate (fail-closed)
   const allocations = await getHybridAllocationsForSponsor(sponsor, chainId);
 
   if (allocations.length === 0) {
     return BigInt(0);
   }
-
-  const currentTimeSeconds = BigInt(Math.floor(Date.now() / 1000));
 
   // Convert processed claim hashes to lowercase for comparison
   const processedClaimsSet = new Set(
@@ -677,10 +701,8 @@ export async function getOnChainAllocatedBalance(
   let totalAllocated = BigInt(0);
 
   for (const allocation of allocations) {
-    // Skip expired allocations
-    if (BigInt(allocation.expires) <= currentTimeSeconds) {
-      continue;
-    }
+    // Note: Expiration is already filtered at the query level using finalization timestamp
+    // All allocations returned here have expires > finalizationTimestamp
 
     // Skip already processed claims
     if (processedClaimsSet.has(allocation.claimHash.toLowerCase())) {
