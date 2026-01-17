@@ -11,6 +11,7 @@ import {
   AnyValidatedCompactMessage,
   CompactCategory,
   getCompactCategory,
+  NonceCommand,
 } from './types';
 import { validateNonce } from './nonce';
 import {
@@ -86,12 +87,15 @@ export async function validateCompact(
       };
     }
 
+    // Legacy /compact endpoint requires OFF_CHAIN nonce command
+    // This shares the same nonce pool as /allocation standard allocations
     const nonceResult = await validateNonce(
       validatedCompact.nonce,
       validatedCompact.sponsor,
       chainId,
       db,
-      process.env.ALLOCATOR_ADDRESS
+      process.env.ALLOCATOR_ADDRESS,
+      NonceCommand.OFF_CHAIN
     );
     if (!nonceResult.isValid) return nonceResult;
 
@@ -129,7 +133,8 @@ export async function validateCompact(
 export async function validateBatchCompact(
   compact: BatchCompactMessage,
   chainId: string,
-  db: PGlite
+  db: PGlite,
+  expectedNonceCommand: NonceCommand = NonceCommand.OFF_CHAIN
 ): Promise<
   ValidationResult & { validatedCompact?: ValidatedBatchCompactMessage }
 > {
@@ -161,12 +166,17 @@ export async function validateBatchCompact(
       };
     }
 
+    // Validate nonce with the expected command type
+    // - OFF_CHAIN (0x02): Legacy /compact and standard /allocation
+    // - PERMIT2 (0x03): Permit2-based /allocation
+    // - ON_CHAIN (0x01): On-chain registered /allocation
     const nonceResult = await validateNonce(
       validatedCompact.nonce,
       validatedCompact.sponsor,
       chainId,
       db,
-      process.env.ALLOCATOR_ADDRESS
+      process.env.ALLOCATOR_ADDRESS,
+      expectedNonceCommand
     );
     if (!nonceResult.isValid) return nonceResult;
 
@@ -238,12 +248,15 @@ export async function validateMultichainCompact(
       };
     }
 
+    // Legacy /compact endpoint requires OFF_CHAIN nonce command
+    // This shares the same nonce pool as /allocation standard allocations
     const nonceResult = await validateNonce(
       validatedCompact.nonce,
       validatedCompact.sponsor,
       chainId,
       db,
-      process.env.ALLOCATOR_ADDRESS
+      process.env.ALLOCATOR_ADDRESS,
+      NonceCommand.OFF_CHAIN
     );
     if (!nonceResult.isValid) return nonceResult;
 

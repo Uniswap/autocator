@@ -273,6 +273,10 @@ describe('Permit2 End-to-End Allocation Tests', () => {
   let server: FastifyInstance;
 
   beforeEach(async () => {
+    // Reset the counter for each test to avoid nonce collisions
+    // Each test gets a fresh database, so counters can restart from 0
+    permit2Counter = BigInt(0);
+
     // Setup GraphQL mocks
     setupGraphQLMocks();
 
@@ -844,6 +848,355 @@ describe('Permit2 End-to-End Allocation Tests', () => {
 
       // Token B: commitment 0.5, deposit 0, delta = 0.5
       expect(tokenBAllocation.amount).toBe('500000000000000000');
+    });
+  });
+
+  describe('Permit2 allocation storage and retrieval', () => {
+    it('should store Permit2 allocation and retrieve it via GET endpoint', async () => {
+      // Create a request where commitment > deposit (to get an allocation signature)
+      const { permit2Message, mandateHash, witnessTypeString } =
+        createFreshPermit2Request({
+          depositAmount: '500000000000000000', // 0.5 tokens
+          commitmentAmount: '1000000000000000000', // 1 token
+        });
+
+      const signature = await generatePermit2Signature(
+        permit2Message,
+        '1',
+        witnessTypeString,
+        mandateHash
+      );
+
+      // Submit allocation
+      const createResponse = await server.inject({
+        method: 'POST',
+        url: '/allocation',
+        payload: {
+          type: 'permit2',
+          chainId: '1',
+          permit2Message,
+          signature,
+          mandateHash,
+          witnessTypeString,
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(200);
+      const createResult = JSON.parse(createResponse.payload);
+      expect(createResult.claimHash).toBeDefined();
+      expect(createResult.allocation).not.toBeNull();
+
+      // Retrieve the allocation using GET
+      const getResponse = await server.inject({
+        method: 'GET',
+        url: `/allocation/1/${createResult.claimHash}`,
+      });
+
+      expect(getResponse.statusCode).toBe(200);
+      const getResult = JSON.parse(getResponse.payload);
+
+      // Should find the allocation
+      expect(getResult.exists).toBe(true);
+      expect(getResult.source).toBe('local-permit2');
+
+      // Should have all the stored data
+      expect(getResult.allocation.claimHash).toBe(createResult.claimHash);
+      expect(getResult.allocation.sponsor.toLowerCase()).toBe(
+        TEST_SPONSOR.toLowerCase()
+      );
+      expect(getResult.allocation.mandateHash).toBeDefined();
+      expect(getResult.allocation.witnessTypeString).toBe(witnessTypeString);
+      expect(getResult.allocation.permit2Message).toBeDefined();
+      expect(getResult.allocation.permit2Signature).toBeDefined();
+      expect(getResult.allocation.allocationSignature).toBe(
+        createResult.allocation.signature
+      );
+      expect(getResult.allocation.additionalCommitments).toBeDefined();
+      expect(getResult.allocation.additionalCommitments).toHaveLength(1);
+      expect(getResult.allocation.additionalCommitments[0].amount).toBe(
+        '500000000000000000'
+      ); // Delta amount
+    });
+
+    it('should store Permit2 allocation even when no additional allocation needed (null signature)', async () => {
+      // Create a request where deposit >= commitment (no allocation needed)
+      const { permit2Message, mandateHash, witnessTypeString } =
+        createFreshPermit2Request({
+          depositAmount: '1000000000000000000', // 1 token (equals commitment)
+          commitmentAmount: '1000000000000000000',
+        });
+
+      const signature = await generatePermit2Signature(
+        permit2Message,
+        '1',
+        witnessTypeString,
+        mandateHash
+      );
+
+      // Submit allocation
+      const createResponse = await server.inject({
+        method: 'POST',
+        url: '/allocation',
+        payload: {
+          type: 'permit2',
+          chainId: '1',
+          permit2Message,
+          signature,
+          mandateHash,
+          witnessTypeString,
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(200);
+      const createResult = JSON.parse(createResponse.payload);
+      expect(createResult.claimHash).toBeDefined();
+      expect(createResult.allocation).toBeNull(); // No additional allocation
+
+      // NOTE: When allocation is null (deposit covers commitment),
+      // we do NOT store in permit2_allocations table since there's no
+      // signature to lose. The user should use on-chain flow.
+      // This is intentional - only allocations with signatures need storage.
+    });
+
+    it('should prevent nonce reuse for Permit2 allocations', async () => {
+      // Use a fixed counter value to ensure we use the same nonce
+      const fixedCounter = BigInt(999999);
+
+      // Create hybrid nonce with PERMIT2 command
+      const nonce = constructHybridNonce(
+        NonceCommand.PERMIT2,
+        TEST_SPONSOR,
+        fixedCounter
+      );
+      const nonceHex = `0x${nonce.toString(16).padStart(64, '0')}` as Hex;
+
+      const lockTag = encodeLockTag(
+        BigInt(1),
+        ResetPeriod.ThirtyDays,
+        Scope.Multichain
+      );
+      const testToken = '0x0000000000000000000000000000000000000001';
+      const witnessTypeString = 'address adjuster,address legate';
+
+      // First allocation
+      const compact1: BatchCompactMessage = {
+        arbiter: TRIBUNAL_ADDRESS,
+        sponsor: TEST_SPONSOR,
+        nonce: nonceHex, // Same nonce
+        expires: (Math.floor(Date.now() / 1000) + 3600).toString(),
+        commitments: [
+          {
+            lockTag,
+            token: testToken,
+            amount: '1000000000000000000',
+          },
+        ],
+        witnessTypeString,
+        witnessHash: null,
+      };
+
+      const ids1 = compact1.commitments.map((c) => {
+        const lockTagBigInt = BigInt(c.lockTag);
+        const tokenBigInt = BigInt(c.token);
+        return `0x${((lockTagBigInt << BigInt(160)) | tokenBigInt).toString(16).padStart(64, '0')}`;
+      });
+
+      const permit2Message1: Permit2Message = {
+        permitted: [{ token: testToken, amount: '500000000000000000' }],
+        spender: THE_COMPACT_ADDRESS,
+        nonce: fixedCounter.toString(),
+        deadline: (Math.floor(Date.now() / 1000) + 3600).toString(),
+        witness: {
+          activator: getAllocatorAddress(),
+          ids: ids1,
+          compact: compact1,
+        },
+        depositLockTag: lockTag,
+      };
+
+      const mandateHash1 = keccak256(
+        encodePacked(
+          ['string', 'uint256'],
+          ['test-mandate-nonce1', fixedCounter]
+        )
+      ) as Hex;
+
+      const signature1 = await generatePermit2Signature(
+        permit2Message1,
+        '1',
+        witnessTypeString,
+        mandateHash1
+      );
+
+      // First request should succeed
+      const response1 = await server.inject({
+        method: 'POST',
+        url: '/allocation',
+        payload: {
+          type: 'permit2',
+          chainId: '1',
+          permit2Message: permit2Message1,
+          signature: signature1,
+          mandateHash: mandateHash1,
+          witnessTypeString,
+        },
+      });
+
+      expect(response1.statusCode).toBe(200);
+
+      // Second allocation with SAME nonce but different mandate
+      const mandateHash2 = keccak256(
+        encodePacked(
+          ['string', 'uint256'],
+          ['test-mandate-nonce2', fixedCounter + BigInt(1)]
+        )
+      ) as Hex;
+
+      const signature2 = await generatePermit2Signature(
+        permit2Message1, // Same permit2 message (same nonce)
+        '1',
+        witnessTypeString,
+        mandateHash2 // Different mandate
+      );
+
+      // Second request should fail due to nonce reuse
+      const response2 = await server.inject({
+        method: 'POST',
+        url: '/allocation',
+        payload: {
+          type: 'permit2',
+          chainId: '1',
+          permit2Message: permit2Message1, // Same message
+          signature: signature2,
+          mandateHash: mandateHash2, // Different mandate
+          witnessTypeString,
+        },
+      });
+
+      // Should fail with 400 due to nonce already consumed
+      expect(response2.statusCode).toBe(400);
+      const result2 = JSON.parse(response2.payload);
+      expect(result2.error.toLowerCase()).toContain('nonce');
+    });
+
+    it('should return full Permit2 payload on retrieval for recovery', async () => {
+      // Create request with multiple tokens to ensure full payload is stored
+      const counter = permit2Counter++;
+
+      const nonce = constructHybridNonce(
+        NonceCommand.PERMIT2,
+        TEST_SPONSOR,
+        counter
+      );
+      const nonceHex = `0x${nonce.toString(16).padStart(64, '0')}` as Hex;
+
+      const lockTag = encodeLockTag(
+        BigInt(1),
+        ResetPeriod.ThirtyDays,
+        Scope.Multichain
+      );
+
+      const tokenA = '0x0000000000000000000000000000000000000001';
+      const tokenB = '0x0000000000000000000000000000000000000002';
+      const witnessTypeString = 'address adjuster,address legate';
+
+      const compact: BatchCompactMessage = {
+        arbiter: TRIBUNAL_ADDRESS,
+        sponsor: TEST_SPONSOR,
+        nonce: nonceHex,
+        expires: (Math.floor(Date.now() / 1000) + 3600).toString(),
+        commitments: [
+          { lockTag, token: tokenA, amount: '800000000000000000' }, // 0.8 tokens
+          { lockTag, token: tokenB, amount: '900000000000000000' }, // 0.9 tokens
+        ],
+        witnessTypeString,
+        witnessHash: null,
+      };
+
+      const ids = compact.commitments.map((c) => {
+        const lockTagBigInt = BigInt(c.lockTag);
+        const tokenBigInt = BigInt(c.token);
+        return `0x${((lockTagBigInt << BigInt(160)) | tokenBigInt).toString(16).padStart(64, '0')}`;
+      });
+
+      const permit2Message: Permit2Message = {
+        permitted: [
+          { token: tokenA, amount: '300000000000000000' }, // Partial
+          { token: tokenB, amount: '500000000000000000' }, // Partial
+        ],
+        spender: THE_COMPACT_ADDRESS,
+        nonce: counter.toString(),
+        deadline: (Math.floor(Date.now() / 1000) + 3600).toString(),
+        witness: {
+          activator: getAllocatorAddress(),
+          ids,
+          compact,
+        },
+        depositLockTag: lockTag,
+      };
+
+      const mandateHash = keccak256(
+        encodePacked(['string', 'uint256'], ['test-mandate-recovery', counter])
+      ) as Hex;
+
+      const signature = await generatePermit2Signature(
+        permit2Message,
+        '1',
+        witnessTypeString,
+        mandateHash
+      );
+
+      // Create allocation
+      const createResponse = await server.inject({
+        method: 'POST',
+        url: '/allocation',
+        payload: {
+          type: 'permit2',
+          chainId: '1',
+          permit2Message,
+          signature,
+          mandateHash,
+          witnessTypeString,
+        },
+      });
+
+      expect(createResponse.statusCode).toBe(200);
+      const createResult = JSON.parse(createResponse.payload);
+
+      // Retrieve - this simulates a caller who lost the original response
+      const getResponse = await server.inject({
+        method: 'GET',
+        url: `/allocation/1/${createResult.claimHash}`,
+      });
+
+      expect(getResponse.statusCode).toBe(200);
+      const getResult = JSON.parse(getResponse.payload);
+
+      // Verify all data needed for recovery is present
+      expect(getResult.exists).toBe(true);
+      expect(getResult.source).toBe('local-permit2');
+
+      // Full Permit2 message payload
+      const storedPermit2Message = getResult.allocation.permit2Message;
+      expect(storedPermit2Message.permitted).toHaveLength(2);
+      expect(storedPermit2Message.spender).toBeDefined();
+      expect(storedPermit2Message.nonce).toBeDefined();
+      expect(storedPermit2Message.deadline).toBeDefined();
+      expect(storedPermit2Message.witness).toBeDefined();
+      expect(storedPermit2Message.witness.compact).toBeDefined();
+      expect(storedPermit2Message.witness.compact.commitments).toHaveLength(2);
+      expect(storedPermit2Message.depositLockTag).toBeDefined();
+
+      // Original Permit2 signature
+      expect(getResult.allocation.permit2Signature).toBeDefined();
+      expect(getResult.allocation.permit2Signature.length).toBe(130); // 64 bytes + 0x
+
+      // Allocation signature (the key recovery data)
+      expect(getResult.allocation.allocationSignature).toBeDefined();
+      expect(getResult.allocation.allocationSignature.length).toBe(130);
+
+      // Additional commitments (delta amounts)
+      expect(getResult.allocation.additionalCommitments).toHaveLength(2);
     });
   });
 });

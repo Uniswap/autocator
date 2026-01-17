@@ -445,8 +445,13 @@ async function handleStandardAllocation(
     throw new Error(arbiterValidation.error || 'Invalid arbiter');
   }
 
-  // Validate the BatchCompact structure and allocation
-  const validationResult = await validateBatchCompact(compact, chainId, db);
+  // Validate the BatchCompact structure and allocation (with OFF_CHAIN nonce command)
+  const validationResult = await validateBatchCompact(
+    compact,
+    chainId,
+    db,
+    NonceCommand.OFF_CHAIN
+  );
   if (!validationResult.isValid || !validationResult.validatedCompact) {
     throw new Error(validationResult.error || 'Invalid BatchCompact');
   }
@@ -664,11 +669,12 @@ async function handlePermit2Allocation(
     witnessHash: mandateHash,
   };
 
-  // Validate the BatchCompact structure and allocation
+  // Validate the BatchCompact structure and allocation (with PERMIT2 nonce command)
   const validationResult = await validateBatchCompact(
     compactWithWitness,
     chainId,
-    db
+    db,
+    NonceCommand.PERMIT2
   );
   if (!validationResult.isValid || !validationResult.validatedCompact) {
     throw new Error(
@@ -819,11 +825,12 @@ async function handleOnChainAllocation(
     witnessHash: mandateHash,
   };
 
-  // Validate the BatchCompact structure and allocation
+  // Validate the BatchCompact structure and allocation (with ON_CHAIN nonce command)
   const validationResult = await validateBatchCompact(
     compactWithWitness,
     chainId,
-    db
+    db,
+    NonceCommand.ON_CHAIN
   );
   if (!validationResult.isValid || !validationResult.validatedCompact) {
     throw new Error(validationResult.error || 'Invalid BatchCompact');
@@ -1004,7 +1011,9 @@ export async function setupAllocationRoutes(
             error.message.includes('mismatch') ||
             error.message.includes('not in the allowed list') ||
             error.message.includes('not registered') ||
-            error.message.includes('Sponsor mismatch'))
+            error.message.includes('Sponsor mismatch') ||
+            error.message.includes('Nonce') ||
+            error.message.includes('nonce'))
         ) {
           reply.code(400);
           return { error: error.message };
@@ -1112,6 +1121,17 @@ export async function setupAllocationRoutes(
 
         if (permit2Result.rows.length > 0) {
           const row = permit2Result.rows[0];
+          // PGlite returns JSONB as objects, not strings
+          const permit2Message =
+            typeof row.permit2_message === 'string'
+              ? JSON.parse(row.permit2_message)
+              : row.permit2_message;
+          const additionalCommitments = row.additional_commitments
+            ? typeof row.additional_commitments === 'string'
+              ? JSON.parse(row.additional_commitments)
+              : row.additional_commitments
+            : null;
+
           return {
             exists: true,
             source: 'local-permit2',
@@ -1124,15 +1144,13 @@ export async function setupAllocationRoutes(
               expires: row.expires,
               mandateHash: '0x' + Buffer.from(row.mandate_hash).toString('hex'),
               witnessTypeString: row.witness_type_string,
-              permit2Message: JSON.parse(row.permit2_message),
+              permit2Message,
               permit2Signature:
                 '0x' + Buffer.from(row.permit2_signature).toString('hex'),
               allocationSignature: row.allocation_signature
                 ? '0x' + Buffer.from(row.allocation_signature).toString('hex')
                 : null,
-              additionalCommitments: row.additional_commitments
-                ? JSON.parse(row.additional_commitments)
-                : null,
+              additionalCommitments,
               timestamp: row.created_at,
             },
           };
@@ -1147,6 +1165,147 @@ export async function setupAllocationRoutes(
             error instanceof Error
               ? error.message
               : 'Failed to check allocation',
+        };
+      }
+    }
+  );
+
+  /**
+   * GET /allocations/:sponsor
+   *
+   * Get all allocations for a sponsor address
+   * Returns allocations from both compacts table and permit2_allocations table
+   */
+  server.get<{
+    Params: { sponsor: string };
+  }>(
+    '/allocations/:sponsor',
+    async (
+      request: FastifyRequest<{
+        Params: { sponsor: string };
+      }>,
+      reply: FastifyReply
+    ) => {
+      try {
+        const { sponsor } = request.params;
+
+        // Normalize the sponsor address
+        let normalizedSponsor: string;
+        try {
+          normalizedSponsor = getAddress(sponsor);
+        } catch {
+          reply.code(400);
+          return { error: 'Invalid sponsor address format' };
+        }
+
+        const sponsorBytes = addressToBytes(normalizedSponsor);
+
+        // Get standard/on-chain allocations from compacts table
+        const compactsResult = await server.db.query<{
+          chain_id: string;
+          claim_hash: Uint8Array;
+          sponsor: Uint8Array;
+          nonce: Uint8Array;
+          expires: string;
+          signature: Uint8Array;
+          witness_type_string: string | null;
+          witness_hash: Uint8Array | null;
+          created_at: string;
+        }>(
+          `SELECT chain_id, claim_hash, sponsor, nonce, expires, signature,
+                  witness_type_string, witness_hash, created_at
+           FROM compacts
+           WHERE sponsor = $1
+           ORDER BY created_at DESC`,
+          [sponsorBytes]
+        );
+
+        // Get permit2 allocations from permit2_allocations table
+        const permit2Result = await server.db.query<{
+          chain_id: string;
+          claim_hash: Uint8Array;
+          sponsor: Uint8Array;
+          nonce: Uint8Array;
+          expires: string;
+          mandate_hash: Uint8Array;
+          witness_type_string: string;
+          allocation_signature: Uint8Array | null;
+          additional_commitments: string | null;
+          created_at: string;
+        }>(
+          `SELECT chain_id, claim_hash, sponsor, nonce, expires, mandate_hash,
+                  witness_type_string, allocation_signature, additional_commitments, created_at
+           FROM permit2_allocations
+           WHERE sponsor = $1
+           ORDER BY created_at DESC`,
+          [sponsorBytes]
+        );
+
+        // Format standard allocations
+        const standardAllocations = compactsResult.rows.map((row) => ({
+          type: 'standard' as const,
+          chainId: row.chain_id,
+          claimHash: '0x' + Buffer.from(row.claim_hash).toString('hex'),
+          sponsor: getAddress('0x' + Buffer.from(row.sponsor).toString('hex')),
+          nonce: '0x' + Buffer.from(row.nonce).toString('hex'),
+          expires: row.expires,
+          signature: '0x' + Buffer.from(row.signature).toString('hex'),
+          witnessTypeString: row.witness_type_string,
+          witnessHash: row.witness_hash
+            ? '0x' + Buffer.from(row.witness_hash).toString('hex')
+            : null,
+          timestamp: row.created_at,
+        }));
+
+        // Format permit2 allocations
+        const permit2Allocations = permit2Result.rows.map((row) => {
+          // PGlite returns JSONB as objects, not strings
+          const additionalCommitments = row.additional_commitments
+            ? typeof row.additional_commitments === 'string'
+              ? JSON.parse(row.additional_commitments)
+              : row.additional_commitments
+            : null;
+
+          return {
+            type: 'permit2' as const,
+            chainId: row.chain_id,
+            claimHash: '0x' + Buffer.from(row.claim_hash).toString('hex'),
+            sponsor: getAddress(
+              '0x' + Buffer.from(row.sponsor).toString('hex')
+            ),
+            nonce: '0x' + Buffer.from(row.nonce).toString('hex'),
+            expires: row.expires,
+            mandateHash: '0x' + Buffer.from(row.mandate_hash).toString('hex'),
+            witnessTypeString: row.witness_type_string,
+            allocationSignature: row.allocation_signature
+              ? '0x' + Buffer.from(row.allocation_signature).toString('hex')
+              : null,
+            additionalCommitments,
+            timestamp: row.created_at,
+          };
+        });
+
+        // Combine and sort by timestamp (most recent first)
+        const allAllocations = [
+          ...standardAllocations,
+          ...permit2Allocations,
+        ].sort(
+          (a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+
+        return {
+          sponsor: normalizedSponsor,
+          count: allAllocations.length,
+          allocations: allAllocations,
+        };
+      } catch (error) {
+        reply.code(500);
+        return {
+          error:
+            error instanceof Error
+              ? error.message
+              : 'Failed to get allocations for sponsor',
         };
       }
     }
