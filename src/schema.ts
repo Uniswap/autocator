@@ -61,6 +61,48 @@ export const schemas = {
       UNIQUE(chain_id, sponsor, nonce_high, nonce_low)
     )
   `,
+  permit2_allocations: `
+    CREATE TABLE IF NOT EXISTS permit2_allocations (
+      id UUID PRIMARY KEY,
+      chain_id bigint NOT NULL,
+      claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
+      
+      -- The sponsor who signed the Permit2 message
+      sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
+      
+      -- Nonce from the compact (not the Permit2 nonce)
+      nonce bytea NOT NULL CHECK (length(nonce) = 32),
+      
+      -- Expiration of the compact
+      expires BIGINT NOT NULL,
+      
+      -- The mandate hash used as witness hash in the compact
+      mandate_hash bytea NOT NULL CHECK (length(mandate_hash) = 32),
+      
+      -- The witness type string for claim hash derivation
+      witness_type_string TEXT NOT NULL,
+      
+      -- The full Permit2 message as JSON (for retrieval/debugging)
+      permit2_message JSONB NOT NULL,
+      
+      -- The original Permit2 signature from the sponsor
+      permit2_signature bytea NOT NULL,
+      
+      -- Deposit details - the lock tag for all deposits
+      deposit_lock_tag bytea NOT NULL CHECK (length(deposit_lock_tag) = 12),
+      
+      -- The HybridAllocationContext signature from the allocator
+      -- (null if no additional allocation needed - deposit covers all commitments)
+      allocation_signature bytea,
+      
+      -- The additional commitments that needed allocation (delta amounts)
+      -- JSON array of {lockTag, token, amount}
+      additional_commitments JSONB,
+      
+      created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(chain_id, claim_hash)
+    )
+  `,
 };
 
 export const indexes = {
@@ -80,6 +122,11 @@ export const indexes = {
   nonces: [
     'CREATE INDEX IF NOT EXISTS idx_nonces_chain_sponsor ON nonces(chain_id, sponsor)',
     'CREATE INDEX IF NOT EXISTS idx_nonces_consumed ON nonces(consumed_at DESC)',
+  ],
+  permit2_allocations: [
+    'CREATE INDEX IF NOT EXISTS idx_permit2_allocations_sponsor ON permit2_allocations(sponsor)',
+    'CREATE INDEX IF NOT EXISTS idx_permit2_allocations_chain_claim ON permit2_allocations(chain_id, claim_hash)',
+    'CREATE INDEX IF NOT EXISTS idx_permit2_allocations_created ON permit2_allocations(created_at DESC)',
   ],
 };
 
@@ -116,6 +163,7 @@ export async function initializeDatabase(db: PGlite): Promise<void> {
     await db.query(schemas.compact_elements);
     await db.query(schemas.compact_commitments);
     await db.query(schemas.nonces);
+    await db.query(schemas.permit2_allocations);
 
     // Create indexes
     await Promise.all(
@@ -135,6 +183,7 @@ export async function dropTables(db: PGlite): Promise<void> {
   await db.query('BEGIN');
   try {
     // Drop in reverse order due to FK constraints
+    await db.query('DROP TABLE IF EXISTS permit2_allocations CASCADE');
     await db.query('DROP TABLE IF EXISTS compact_commitments CASCADE');
     await db.query('DROP TABLE IF EXISTS compact_elements CASCADE');
     await db.query('DROP TABLE IF EXISTS compacts CASCADE');

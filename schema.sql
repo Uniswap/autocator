@@ -77,3 +77,51 @@ CREATE INDEX idx_compact_commitments_element ON compact_commitments(element_id);
 
 CREATE INDEX idx_nonces_chain_sponsor ON nonces(chain_id, sponsor);
 CREATE INDEX idx_nonces_consumed ON nonces(consumed_at DESC);
+
+-- Permit2 allocations table for storing hybrid allocations with Permit2 deposits
+-- These allocations sign for the delta (excess) amount when deposit doesn't cover full commitment
+CREATE TABLE permit2_allocations (
+    id UUID PRIMARY KEY,
+    chain_id bigint NOT NULL,
+    claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
+    
+    -- The sponsor who signed the Permit2 message
+    sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
+    
+    -- Nonce from the compact (not the Permit2 nonce)
+    nonce bytea NOT NULL CHECK (length(nonce) = 32),
+    
+    -- Expiration of the compact
+    expires BIGINT NOT NULL,
+    
+    -- The mandate hash used as witness hash in the compact
+    mandate_hash bytea NOT NULL CHECK (length(mandate_hash) = 32),
+    
+    -- The witness type string for claim hash derivation
+    witness_type_string TEXT NOT NULL,
+    
+    -- The full Permit2 message as JSON (for retrieval/debugging)
+    permit2_message JSONB NOT NULL,
+    
+    -- The original Permit2 signature from the sponsor
+    permit2_signature bytea NOT NULL,
+    
+    -- Deposit details - the lock tag for all deposits
+    deposit_lock_tag bytea NOT NULL CHECK (length(deposit_lock_tag) = 12),
+    
+    -- The HybridAllocationContext signature from the allocator
+    -- (null if no additional allocation needed - deposit covers all commitments)
+    allocation_signature bytea,
+    
+    -- The additional commitments that needed allocation (delta amounts)
+    -- JSON array of {lockTag, token, amount}
+    additional_commitments JSONB,
+    
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(chain_id, claim_hash)
+);
+
+-- Create indexes for permit2_allocations
+CREATE INDEX idx_permit2_allocations_sponsor ON permit2_allocations(sponsor);
+CREATE INDEX idx_permit2_allocations_chain_claim ON permit2_allocations(chain_id, claim_hash);
+CREATE INDEX idx_permit2_allocations_created ON permit2_allocations(created_at DESC);

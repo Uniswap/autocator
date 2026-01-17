@@ -307,6 +307,125 @@ async function storeAllocation(
   }
 }
 
+/**
+ * Store a Permit2 allocation in the database
+ *
+ * This stores the full Permit2 message payload and allocation details
+ * so that the allocation can be retrieved if the caller loses the response.
+ */
+async function storePermit2Allocation(
+  db: PGlite,
+  chainId: string,
+  claimHash: Hex,
+  sponsor: string,
+  nonce: bigint,
+  expires: bigint,
+  mandateHash: Hex,
+  witnessTypeString: string,
+  permit2Message: Permit2Message,
+  permit2Signature: Hex,
+  allocationSignature: Hex | null,
+  additionalCommitments: Lock[] | null
+): Promise<void> {
+  const allocationId = randomUUID();
+
+  // Convert nonce to hex string preserving all 32 bytes
+  const nonceHex = nonce.toString(16).padStart(64, '0');
+  const nonceBytes = hexToBuffer(nonceHex);
+
+  // Get depositLockTag from permit2Message
+  const depositLockTagHex = permit2Message.depositLockTag.startsWith('0x')
+    ? permit2Message.depositLockTag.slice(2)
+    : permit2Message.depositLockTag;
+  const depositLockTagBytes = hexToBuffer(depositLockTagHex.padStart(24, '0'));
+
+  // Start transaction
+  await db.query('BEGIN');
+
+  try {
+    // Insert into permit2_allocations table
+    await db.query(
+      `INSERT INTO permit2_allocations (
+        id,
+        chain_id,
+        claim_hash,
+        sponsor,
+        nonce,
+        expires,
+        mandate_hash,
+        witness_type_string,
+        permit2_message,
+        permit2_signature,
+        deposit_lock_tag,
+        allocation_signature,
+        additional_commitments,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, CURRENT_TIMESTAMP)`,
+      [
+        allocationId,
+        chainId,
+        hexToBuffer(claimHash),
+        addressToBytes(sponsor),
+        nonceBytes,
+        expires.toString(),
+        hexToBuffer(mandateHash),
+        witnessTypeString,
+        JSON.stringify(permit2Message),
+        hexToBuffer(permit2Signature),
+        depositLockTagBytes,
+        allocationSignature ? hexToBuffer(allocationSignature) : null,
+        additionalCommitments ? JSON.stringify(additionalCommitments) : null,
+      ]
+    );
+
+    // Also store the nonce to prevent reuse
+    const parsedNonce = parseHybridNonce(nonce);
+
+    // Split fragment into high/low parts for database storage
+    const nonceLowUnsigned = parsedNonce.fragment & BigInt(0xffffffff);
+    const nonceHighUnsigned = parsedNonce.fragment >> BigInt(32);
+
+    // Convert unsigned values to signed for PostgreSQL storage
+    const nonceLow =
+      nonceLowUnsigned >= BigInt(0x80000000)
+        ? Number(nonceLowUnsigned - BigInt(0x100000000))
+        : Number(nonceLowUnsigned);
+
+    const nonceHigh =
+      nonceHighUnsigned >= BigInt('0x8000000000000000')
+        ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
+        : Number(nonceHighUnsigned);
+
+    const nonceCommand = parsedNonce.command;
+
+    await db.query(
+      `INSERT INTO nonces (
+        id,
+        chain_id,
+        sponsor,
+        nonce_high,
+        nonce_low,
+        nonce_command,
+        consumed_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+      ON CONFLICT (chain_id, sponsor, nonce_high, nonce_low) DO NOTHING`,
+      [
+        randomUUID(),
+        chainId,
+        addressToBytes(sponsor),
+        nonceHigh.toString(),
+        nonceLow,
+        nonceCommand > 0 && nonceCommand <= 3 ? nonceCommand : null,
+      ]
+    );
+
+    await db.query('COMMIT');
+  } catch (error) {
+    await db.query('ROLLBACK');
+    throw error;
+  }
+}
+
 // ============================================================
 // Request Handlers
 // ============================================================
@@ -626,9 +745,22 @@ async function handlePermit2Allocation(
   );
   const allocationSignature = await signaturePromise;
 
-  // Note: We do NOT store this in the database the same way as standard allocations
-  // because we're not signing the full compact. The signature is for the
-  // HybridAllocationContext which ties together the claim hash and additional amounts.
+  // Store the Permit2 allocation in the database
+  // This ensures the allocation can be retrieved if the caller loses the response
+  await storePermit2Allocation(
+    db,
+    chainId,
+    claimHash,
+    validatedCompact.sponsor,
+    validatedCompact.nonce,
+    validatedCompact.expires,
+    mandateHash,
+    witnessTypeString,
+    permit2Message,
+    signature,
+    allocationSignature,
+    additionalCommitments
+  );
 
   return {
     claimHash,
@@ -925,7 +1057,7 @@ export async function setupAllocationRoutes(
           };
         }
 
-        // Check local database
+        // Check local compacts table (standard and on-chain allocations)
         const localResult = await server.db.query<{
           claim_hash: Uint8Array;
           sponsor: Uint8Array;
@@ -951,6 +1083,56 @@ export async function setupAllocationRoutes(
               ),
               nonce: '0x' + Buffer.from(row.nonce).toString('hex'),
               expires: row.expires,
+              timestamp: row.created_at,
+            },
+          };
+        }
+
+        // Check local permit2_allocations table (Permit2-type allocations)
+        const permit2Result = await server.db.query<{
+          claim_hash: Uint8Array;
+          sponsor: Uint8Array;
+          nonce: Uint8Array;
+          expires: string;
+          mandate_hash: Uint8Array;
+          witness_type_string: string;
+          permit2_message: string;
+          permit2_signature: Uint8Array;
+          allocation_signature: Uint8Array | null;
+          additional_commitments: string | null;
+          created_at: string;
+        }>(
+          `SELECT claim_hash, sponsor, nonce, expires, mandate_hash, witness_type_string,
+                  permit2_message, permit2_signature, allocation_signature, 
+                  additional_commitments, created_at
+           FROM permit2_allocations
+           WHERE chain_id = $1 AND claim_hash = $2`,
+          [chainId, hexToBuffer(claimHash)]
+        );
+
+        if (permit2Result.rows.length > 0) {
+          const row = permit2Result.rows[0];
+          return {
+            exists: true,
+            source: 'local-permit2',
+            allocation: {
+              claimHash,
+              sponsor: getAddress(
+                '0x' + Buffer.from(row.sponsor).toString('hex')
+              ),
+              nonce: '0x' + Buffer.from(row.nonce).toString('hex'),
+              expires: row.expires,
+              mandateHash: '0x' + Buffer.from(row.mandate_hash).toString('hex'),
+              witnessTypeString: row.witness_type_string,
+              permit2Message: JSON.parse(row.permit2_message),
+              permit2Signature:
+                '0x' + Buffer.from(row.permit2_signature).toString('hex'),
+              allocationSignature: row.allocation_signature
+                ? '0x' + Buffer.from(row.allocation_signature).toString('hex')
+                : null,
+              additionalCommitments: row.additional_commitments
+                ? JSON.parse(row.additional_commitments)
+                : null,
               timestamp: row.created_at,
             },
           };
