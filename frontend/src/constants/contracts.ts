@@ -1,13 +1,14 @@
 import {
   mainnet,
   optimism,
-  optimismGoerli,
+  optimismSepolia,
   sepolia,
-  goerli,
   base,
   baseSepolia,
+  arbitrum,
+  arbitrumSepolia,
 } from 'viem/chains';
-import { unichain } from '../config/wagmi';
+import { unichain, unichainSepolia } from '../config/wagmi';
 
 // The Compact V1 is deployed at the same address on all networks
 export const COMPACT_ADDRESS =
@@ -73,23 +74,17 @@ export const SUPPORTED_CHAINS = {
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://optimistic.etherscan.io',
   },
-  [optimismGoerli.id]: {
-    name: 'Optimism Goerli',
-    rpcUrl: 'https://opt-goerli.g.alchemy.com/v2/',
+  [optimismSepolia.id]: {
+    name: 'Optimism Sepolia',
+    rpcUrl: 'https://opt-sepolia.g.alchemy.com/v2/',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
-    blockExplorer: 'https://goerli-optimism.etherscan.io',
+    blockExplorer: 'https://sepolia-optimism.etherscan.io',
   },
   [sepolia.id]: {
     name: 'Sepolia',
     rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://sepolia.etherscan.io',
-  },
-  [goerli.id]: {
-    name: 'Goerli',
-    rpcUrl: 'https://eth-goerli.g.alchemy.com/v2/',
-    compactAddress: COMPACT_ADDRESS as `0x${string}`,
-    blockExplorer: 'https://goerli.etherscan.io',
   },
   [base.id]: {
     name: 'Base',
@@ -103,11 +98,29 @@ export const SUPPORTED_CHAINS = {
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://sepolia.basescan.org',
   },
+  [arbitrum.id]: {
+    name: 'Arbitrum One',
+    rpcUrl: 'https://arb-mainnet.g.alchemy.com/v2/',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://arbiscan.io',
+  },
+  [arbitrumSepolia.id]: {
+    name: 'Arbitrum Sepolia',
+    rpcUrl: 'https://arb-sepolia.g.alchemy.com/v2/',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://sepolia.arbiscan.io',
+  },
   [unichain.id]: {
     name: 'Unichain',
     rpcUrl: 'https://mainnet.unichain.org',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://uniscan.xyz',
+  },
+  [unichainSepolia.id]: {
+    name: 'Unichain Sepolia',
+    rpcUrl: 'https://sepolia.unichain.org',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://sepolia.uniscan.xyz',
   },
 } as const;
 

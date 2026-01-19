@@ -16,24 +16,27 @@ import { useNotification } from './useNotification';
 import {
   mainnet,
   optimism,
-  optimismGoerli,
+  optimismSepolia,
   sepolia,
-  goerli,
   base,
   baseSepolia,
+  arbitrum,
+  arbitrumSepolia,
 } from 'viem/chains';
-import { unichain } from '../config/wagmi';
+import { unichain, unichainSepolia } from '../config/wagmi';
 import { useState } from 'react';
 
 const chains: Record<number, Chain> = {
   [mainnet.id]: mainnet,
   [optimism.id]: optimism,
-  [optimismGoerli.id]: optimismGoerli,
+  [optimismSepolia.id]: optimismSepolia,
   [sepolia.id]: sepolia,
-  [goerli.id]: goerli,
   [base.id]: base,
   [baseSepolia.id]: baseSepolia,
+  [arbitrum.id]: arbitrum,
+  [arbitrumSepolia.id]: arbitrumSepolia,
   [unichain.id]: unichain,
+  [unichainSepolia.id]: unichainSepolia,
 };
 
 interface TokenInfo {

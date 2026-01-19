@@ -2,11 +2,12 @@ import { http } from 'wagmi';
 import {
   mainnet,
   optimism,
-  optimismGoerli,
+  optimismSepolia,
   sepolia,
-  goerli,
   base,
   baseSepolia,
+  arbitrum,
+  arbitrumSepolia,
   Chain,
 } from 'viem/chains';
 import { getDefaultConfig } from '@rainbow-me/rainbowkit';
@@ -17,8 +18,8 @@ export const unichain = {
   name: 'Unichain',
   nativeCurrency: {
     decimals: 18,
-    name: 'UNI',
-    symbol: 'UNI',
+    name: 'Ether',
+    symbol: 'ETH',
   },
   rpcUrls: {
     default: {
@@ -36,18 +37,47 @@ export const unichain = {
   },
 } as const satisfies Chain;
 
-// Configure supported chains
-const projectId = 'YOUR_PROJECT_ID'; // Get from WalletConnect Cloud
+// Define Unichain Sepolia configuration
+export const unichainSepolia = {
+  id: 1301,
+  name: 'Unichain Sepolia',
+  nativeCurrency: {
+    decimals: 18,
+    name: 'Ether',
+    symbol: 'ETH',
+  },
+  rpcUrls: {
+    default: {
+      http: ['https://sepolia.unichain.org'],
+    },
+    public: {
+      http: ['https://sepolia.unichain.org'],
+    },
+  },
+  blockExplorers: {
+    default: {
+      name: 'Uniscan',
+      url: 'https://sepolia.uniscan.xyz',
+    },
+  },
+  testnet: true,
+} as const satisfies Chain;
+
+// Configure supported chains - Get project ID from environment
+const projectId =
+  import.meta.env.VITE_WALLETCONNECT_PROJECT_ID || 'YOUR_PROJECT_ID';
 
 export const chains = [
   mainnet,
   optimism,
-  optimismGoerli,
+  optimismSepolia,
   sepolia,
-  goerli,
   base,
   baseSepolia,
+  arbitrum,
+  arbitrumSepolia,
   unichain,
+  unichainSepolia,
 ] as const;
 
 // Create wagmi config using RainbowKit's getDefaultConfig
@@ -67,10 +97,12 @@ export const config = getDefaultConfig({
 export const CHAIN_IDS = {
   MAINNET: mainnet.id,
   OPTIMISM: optimism.id,
-  OPTIMISM_GOERLI: optimismGoerli.id,
+  OPTIMISM_SEPOLIA: optimismSepolia.id,
   SEPOLIA: sepolia.id,
-  GOERLI: goerli.id,
   BASE: base.id,
   BASE_SEPOLIA: baseSepolia.id,
+  ARBITRUM: arbitrum.id,
+  ARBITRUM_SEPOLIA: arbitrumSepolia.id,
   UNICHAIN: unichain.id,
+  UNICHAIN_SEPOLIA: unichainSepolia.id,
 } as const;
