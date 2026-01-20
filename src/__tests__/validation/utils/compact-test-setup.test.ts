@@ -163,7 +163,7 @@ describe('Compact Test Setup', () => {
       expect(response).toHaveProperty('account.claims.items');
 
       // Verify the chain data
-      expect(response.allocator.supportedChains.items[0]).toEqual(
+      expect(response.allocator!.supportedChains.items[0]).toEqual(
         expect.objectContaining({
           chainId: '1',
           allocatorId: expect.any(String),
@@ -186,7 +186,7 @@ describe('Compact Test Setup', () => {
       const chainsResponse = (await graphqlClient.request(
         'query GetSupportedChains { test }'
       )) as MockResponse;
-      expect(chainsResponse.allocator.supportedChains.items).toBeDefined();
+      expect(chainsResponse.allocator!.supportedChains.items).toBeDefined();
 
       // Test GetDetails query
       const detailsResponse = (await graphqlClient.request(
@@ -221,7 +221,7 @@ describe('Compact Test Setup', () => {
         'query { test }'
       )) as MockResponse;
       const allocatorId =
-        response.allocator.supportedChains.items[0].allocatorId;
+        response.allocator!.supportedChains.items[0].allocatorId;
 
       // The allocatorId should be derived from TEST_LOCK_ID according to the formula:
       // ((TEST_LOCK_ID >> 160) & ((1 << 92) - 1))
