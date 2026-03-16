@@ -21,6 +21,13 @@ export function CreateAllocation() {
     handleSubmit,
     generateNewNonce,
     setShowWitnessFields,
+    // Arbiter selection
+    selectedArbiter,
+    showCustomArbiter,
+    customArbiterAddress,
+    arbiterOptions,
+    handleArbiterChange,
+    handleCustomArbiterChange,
   } = useCreateAllocation();
 
   if (!isConnected) return null;
@@ -89,19 +96,44 @@ export function CreateAllocation() {
           )}
         </div>
 
-        {/* Arbiter Address */}
+        {/* Arbiter Selection */}
         <div>
           <label className="block text-sm font-medium text-gray-300 mb-2">
-            Arbiter Address
+            Arbiter
           </label>
-          <input
-            type="text"
-            name="arbiterAddress"
-            value={formData.arbiterAddress}
-            onChange={handleInputChange}
-            placeholder="0x..."
+          <select
+            value={showCustomArbiter ? 'custom' : selectedArbiter.address}
+            onChange={(e) => handleArbiterChange(e.target.value)}
             className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 focus:outline-none focus:border-[#00ff00] transition-colors"
-          />
+          >
+            {arbiterOptions.map((arbiter) => (
+              <option
+                key={arbiter.isCustom ? 'custom' : arbiter.address}
+                value={arbiter.isCustom ? 'custom' : arbiter.address}
+              >
+                {arbiter.name}
+                {!arbiter.isCustom &&
+                  ` (${arbiter.address.slice(0, 6)}...${arbiter.address.slice(-4)})`}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            {selectedArbiter.description}
+          </p>
+
+          {/* Custom Arbiter Address Input */}
+          {showCustomArbiter && (
+            <div className="mt-2">
+              <input
+                type="text"
+                value={customArbiterAddress}
+                onChange={(e) => handleCustomArbiterChange(e.target.value)}
+                placeholder="Enter custom arbiter address (0x...)"
+                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-gray-300 focus:outline-none focus:border-[#00ff00] transition-colors"
+              />
+            </div>
+          )}
+
           {errors.arbiterAddress && (
             <p className="mt-1 text-sm text-red-500">{errors.arbiterAddress}</p>
           )}

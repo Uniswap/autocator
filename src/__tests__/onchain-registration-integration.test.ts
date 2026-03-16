@@ -88,6 +88,16 @@ describe('Onchain Registration Integration', () => {
         } as T;
       }
 
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
+        } as T;
+      }
+
       // Handle nonce consumption check
       if (
         query.includes('CheckConsumedNonce') ||
@@ -160,6 +170,16 @@ describe('Onchain Registration Integration', () => {
             }, // 10 ETH
             claims: { items: [] },
           },
+        } as T;
+      }
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
         } as T;
       }
 
@@ -249,6 +269,16 @@ describe('Onchain Registration Integration', () => {
         } as T;
       }
 
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
+        } as T;
+      }
+
       // Handle nonce consumption check
       if (
         query.includes('CheckConsumedNonce') ||
@@ -318,6 +348,16 @@ describe('Onchain Registration Integration', () => {
             }, // 10 ETH
             claims: { items: [] },
           },
+        } as T;
+      }
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
         } as T;
       }
 
@@ -404,6 +444,16 @@ describe('Onchain Registration Integration', () => {
         } as T;
       }
 
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
+        } as T;
+      }
+
       // Handle nonce consumption check
       if (
         query.includes('CheckConsumedNonce') ||
@@ -484,6 +534,16 @@ describe('Onchain Registration Integration', () => {
             }, // 10 ETH
             claims: { items: [] },
           },
+        } as T;
+      }
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
         } as T;
       }
 
@@ -570,6 +630,16 @@ describe('Onchain Registration Integration', () => {
             }, // 10 ETH
             claims: { items: [] },
           },
+        } as T;
+      }
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return {
+          allocations: { items: [] },
         } as T;
       }
 

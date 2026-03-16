@@ -1,4 +1,13 @@
-import { generateNonce, validateNonce } from '../../validation/nonce';
+import {
+  generateNonce,
+  validateNonce,
+  storeNonce,
+} from '../../validation/nonce';
+import {
+  parseHybridNonce,
+  constructHybridNonce,
+} from '../../validation/hybrid-nonce';
+import { NonceCommand } from '../../validation/types';
 import { PGlite } from '@electric-sql/pglite';
 import { hexToBytes } from 'viem/utils';
 
@@ -8,23 +17,45 @@ describe('Nonce Validation', () => {
   beforeAll(async (): Promise<void> => {
     db = new PGlite();
 
-    // Create test tables with bytea columns
+    // Create test tables using the new normalized schema
     await db.query(`
       CREATE TABLE IF NOT EXISTS compacts (
         id UUID PRIMARY KEY,
         chain_id bigint NOT NULL,
         claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
-        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        compact_type INTEGER NOT NULL DEFAULT 0 CHECK (compact_type IN (0, 1, 2)),
         sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
         nonce bytea NOT NULL CHECK (length(nonce) = 32),
         expires BIGINT NOT NULL,
-        lock_id bytea NOT NULL CHECK (length(lock_id) = 32),
-        amount bytea NOT NULL CHECK (length(amount) = 32),
+        signature bytea NOT NULL,
         witness_type_string TEXT,
         witness_hash bytea CHECK (witness_hash IS NULL OR length(witness_hash) = 32),
-        signature bytea NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(chain_id, claim_hash)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_elements (
+        id UUID PRIMARY KEY,
+        compact_id UUID NOT NULL REFERENCES compacts(id) ON DELETE CASCADE,
+        element_index INTEGER NOT NULL DEFAULT 0,
+        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        chain_id bigint NOT NULL,
+        mandate_hash bytea CHECK (mandate_hash IS NULL OR length(mandate_hash) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(compact_id, element_index)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_commitments (
+        id UUID PRIMARY KEY,
+        element_id UUID NOT NULL REFERENCES compact_elements(id) ON DELETE CASCADE,
+        lock_tag bytea NOT NULL CHECK (length(lock_tag) = 12),
+        token bytea NOT NULL CHECK (length(token) = 20),
+        amount bytea NOT NULL CHECK (length(amount) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
@@ -35,6 +66,7 @@ describe('Nonce Validation', () => {
         sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
         nonce_high bigint NOT NULL,
         nonce_low integer NOT NULL,
+        nonce_command INTEGER,
         consumed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(chain_id, sponsor, nonce_high, nonce_low)
       )
@@ -42,7 +74,9 @@ describe('Nonce Validation', () => {
   });
 
   afterAll(async (): Promise<void> => {
-    // Clean up
+    // Clean up (order matters due to foreign keys)
+    await db.query('DROP TABLE IF EXISTS compact_commitments');
+    await db.query('DROP TABLE IF EXISTS compact_elements');
     await db.query('DROP TABLE IF EXISTS compacts');
     await db.query('DROP TABLE IF EXISTS nonces');
   });
@@ -59,21 +93,24 @@ describe('Nonce Validation', () => {
 
       const nonce = await generateNonce(sponsor, chainId, db);
 
-      // Convert nonce to hex string without 0x prefix
-      const nonceHex = nonce.toString(16).padStart(64, '0');
+      // Parse the hybrid nonce to verify its structure
+      const parsed = parseHybridNonce(nonce);
 
-      // First 40 chars should be sponsor address without 0x
-      expect(nonceHex.slice(0, 40)).toBe(sponsor.slice(2).toLowerCase());
+      // Check command is OFF_CHAIN (default)
+      expect(parsed.command).toBe(NonceCommand.OFF_CHAIN);
 
-      // Last 24 chars should be 0 (first nonce fragment)
-      expect(BigInt('0x' + nonceHex.slice(40))).toBe(BigInt(0));
+      // Check sponsor matches
+      expect(parsed.sponsor.toLowerCase()).toBe(sponsor.toLowerCase());
+
+      // Fragment should be 1 (starts at 1, not 0)
+      expect(parsed.fragment).toBe(BigInt(1));
     });
 
     it('should increment nonce fragment when previous ones are used', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
       const chainId = '1';
 
-      // Insert a used nonce with fragment 0
+      // Insert a used nonce with fragment 1 (nonce_low=1, nonce_high=0)
       await db.query(
         'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5)',
         [
@@ -81,25 +118,25 @@ describe('Nonce Validation', () => {
           chainId,
           hexToBytes(sponsor as `0x${string}`),
           0,
-          0,
+          1,
         ]
       );
 
       const nonce = await generateNonce(sponsor, chainId, db);
-      const nonceHex = nonce.toString(16).padStart(64, '0');
+      const parsed = parseHybridNonce(nonce);
 
-      // Check sponsor part
-      expect(nonceHex.slice(0, 40)).toBe(sponsor.slice(2).toLowerCase());
+      // Check sponsor matches
+      expect(parsed.sponsor.toLowerCase()).toBe(sponsor.toLowerCase());
 
-      // Check fragment is incremented
-      expect(BigInt('0x' + nonceHex.slice(40))).toBe(BigInt(1));
+      // Fragment should be 2 (next after 1)
+      expect(parsed.fragment).toBe(BigInt(2));
     });
 
-    it('should find first available gap in nonce fragments', async (): Promise<void> => {
+    it('should find next available fragment after max used', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
       const chainId = '1';
 
-      // Insert nonces with fragments 0 and 2, leaving 1 as a gap
+      // Insert nonces with fragments 1 and 3
       await db.query(
         'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5), ($6, $2, $3, $7, $8)',
         [
@@ -107,18 +144,18 @@ describe('Nonce Validation', () => {
           chainId,
           hexToBytes(sponsor as `0x${string}`),
           0,
-          0,
+          1,
           '123e4567-e89b-12d3-a456-426614174001',
           0,
-          2,
+          3,
         ]
       );
 
       const nonce = await generateNonce(sponsor, chainId, db);
-      const nonceHex = nonce.toString(16).padStart(64, '0');
+      const parsed = parseHybridNonce(nonce);
 
-      // Check fragment uses the gap
-      expect(BigInt('0x' + nonceHex.slice(40))).toBe(BigInt(1));
+      // Fragment should be 4 (next after max 3)
+      expect(parsed.fragment).toBe(BigInt(4));
     });
 
     it('should handle mixed case sponsor addresses', async (): Promise<void> => {
@@ -152,26 +189,9 @@ describe('Nonce Validation', () => {
     it('should reject a used nonce', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
       const nonce = await generateNonce(sponsor, chainId, db);
-      const nonceHex = nonce.toString(16).padStart(64, '0');
-      const sponsorPart = nonceHex.slice(0, 40);
-      const fragmentPart = nonceHex.slice(40);
 
-      // Extract high and low parts from fragment
-      const fragmentBigInt = BigInt('0x' + fragmentPart);
-      const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-      const nonceHigh = Number(fragmentBigInt >> BigInt(32));
-
-      // Insert nonce as used
-      await db.query(
-        'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5)',
-        [
-          '123e4567-e89b-12d3-a456-426614174000',
-          chainId,
-          hexToBytes(('0x' + sponsorPart) as `0x${string}`),
-          nonceHigh,
-          nonceLow,
-        ]
-      );
+      // Store the nonce as used using the proper method
+      await storeNonce(nonce, chainId, db);
 
       const result = await validateNonce(nonce, sponsor, chainId, db);
       expect(result.isValid).toBe(false);
@@ -180,8 +200,14 @@ describe('Nonce Validation', () => {
 
     it('should reject a nonce with incorrect sponsor prefix', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
-      // Create nonce with wrong sponsor prefix
-      const nonce = BigInt('0x1234' + '0'.repeat(60));
+      const wrongSponsor = '0x0000000000000000000000000000000000001234';
+
+      // Create valid hybrid nonce with wrong sponsor
+      const nonce = constructHybridNonce(
+        NonceCommand.OFF_CHAIN,
+        wrongSponsor,
+        BigInt(1)
+      );
 
       const result = await validateNonce(nonce, sponsor, chainId, db);
       expect(result.isValid).toBe(false);
@@ -191,56 +217,23 @@ describe('Nonce Validation', () => {
     it('should allow same nonce in different chains', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
       const nonce = await generateNonce(sponsor, chainId, db);
-      const nonceHex = nonce.toString(16).padStart(64, '0');
-      const sponsorPart = nonceHex.slice(0, 40);
-      const fragmentPart = nonceHex.slice(40);
 
-      // Extract high and low parts from fragment
-      const fragmentBigInt = BigInt('0x' + fragmentPart);
-      const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-      const nonceHigh = Number(fragmentBigInt >> BigInt(32));
+      // Store nonce as used in a different chain
+      await storeNonce(nonce, '10', db);
 
-      // Insert nonce as used in a different chain
-      await db.query(
-        'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5)',
-        [
-          '123e4567-e89b-12d3-a456-426614174000',
-          '10',
-          hexToBytes(('0x' + sponsorPart) as `0x${string}`),
-          nonceHigh,
-          nonceLow,
-        ]
-      );
-
+      // Should still be valid in chain 1
       const result = await validateNonce(nonce, sponsor, chainId, db);
       expect(result.isValid).toBe(true);
     });
 
-    it('should handle mixed case nonces consistently', async (): Promise<void> => {
+    it('should reject nonce used on same chain', async (): Promise<void> => {
       const sponsor = '0x1234567890123456789012345678901234567890';
       const nonce = await generateNonce(sponsor, chainId, db);
-      const nonceHex = nonce.toString(16).padStart(64, '0');
-      const sponsorPart = nonceHex.slice(0, 40);
-      const fragmentPart = nonceHex.slice(40).toUpperCase(); // Use uppercase
 
-      // Extract high and low parts from fragment
-      const fragmentBigInt = BigInt('0x' + fragmentPart.toLowerCase());
-      const nonceLow = Number(fragmentBigInt & BigInt(0xffffffff));
-      const nonceHigh = Number(fragmentBigInt >> BigInt(32));
+      // Store nonce as used on same chain
+      await storeNonce(nonce, chainId, db);
 
-      // Insert nonce with uppercase fragment
-      await db.query(
-        'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5)',
-        [
-          '123e4567-e89b-12d3-a456-426614174000',
-          chainId,
-          hexToBytes(('0x' + sponsorPart) as `0x${string}`),
-          nonceHigh,
-          nonceLow,
-        ]
-      );
-
-      // Try to validate same nonce with uppercase
+      // Should fail validation
       const result = await validateNonce(nonce, sponsor, chainId, db);
       expect(result.isValid).toBe(false);
       expect(result.error).toContain('Nonce has already been used');

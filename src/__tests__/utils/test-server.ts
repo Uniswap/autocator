@@ -271,10 +271,11 @@ export const validCompact = {
   ), // Set reset period to 7 (30 days)
   arbiter: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
   sponsor: validPayload.address,
-  // Create nonce where first 20 bytes match sponsor address
-  nonce: BigInt(
-    '0x' + validPayload.address.toLowerCase().slice(2) + '0'.repeat(24)
-  ),
+  // Create hybrid nonce: OFF_CHAIN command (0x02) + sponsor (20 bytes) + fragment (11 bytes of zeros)
+  // Format: (command << 248) | (sponsor << 88) | fragment
+  nonce:
+    (BigInt(0x02) << BigInt(248)) |
+    (BigInt(validPayload.address) << BigInt(88)),
   expires: BigInt(Math.floor(Date.now() / 1000) + 3600), // 1 hour from now
   amount: '1000000000000000000',
   witnessTypeString: 'witness-type',
@@ -289,14 +290,17 @@ export function getFreshCompact(): typeof validCompact {
   const counter = compactCounter++;
 
   // Get normalized sponsor address
-  const sponsorAddress = getAddress(validCompact.sponsor).toLowerCase();
+  const sponsorAddress = getAddress(validCompact.sponsor);
 
-  // Create nonce with sponsor in first 20 bytes and counter in last 12 bytes
-  // First convert the sponsor address to a BigInt (removing 0x prefix)
-  const sponsorBigInt = BigInt('0x' + sponsorAddress.slice(2));
+  // Create hybrid nonce with OFF_CHAIN command (0x02)
+  // Hybrid nonce structure: command (1 byte) + sponsor (20 bytes) + fragment (11 bytes)
+  const command = BigInt(0x02); // OFF_CHAIN command
+  const sponsorBigInt = BigInt(sponsorAddress);
+  const fragment = counter; // Use counter as fragment (fits in 11 bytes)
 
-  // Shift sponsor left by 96 bits (12 bytes) to make room for counter
-  const nonce = (sponsorBigInt << BigInt(96)) | counter;
+  // Construct: (command << 248) | (sponsor << 88) | fragment
+  const nonce =
+    (command << BigInt(248)) | (sponsorBigInt << BigInt(88)) | fragment;
 
   // Create new ID preserving everything except the token bits
   const tokenMask = (BigInt(1) << BigInt(160)) - BigInt(1);
