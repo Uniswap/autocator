@@ -1,131 +1,60 @@
-import { getAddress } from 'viem/utils';
-import { hexToBytes, numberToHex } from 'viem/utils';
+import { getAddress, hexToBytes } from 'viem/utils';
 import { PGlite } from '@electric-sql/pglite';
 import { randomUUID } from 'crypto';
-import { ValidationResult } from './types';
+import { ValidationResult, NonceCommand } from './types';
 import { isNonceConsumedOnChain } from '../graphql';
+import { parseHybridNonce, constructHybridNonce } from './hybrid-nonce';
 
 // Helper to convert address to bytea
 function addressToBytes(address: string): Uint8Array {
   return hexToBytes(address as `0x${string}`);
 }
 
-// Helper to convert hex string to 0x-prefixed hex string
-function toHexString(hex: string): `0x${string}` {
-  return `0x${hex}` as `0x${string}`;
-}
-
-// Helper to convert bigint to 32-byte hex string
-function bigintToHex(value: bigint): string {
-  return numberToHex(value, { size: 32 }).slice(2);
-}
-
+/**
+ * Generate a hybrid nonce for the new format.
+ *
+ * Hybrid Nonce Structure (32 bytes):
+ * - Byte 0: Command (0x01=on-chain, 0x02=off-chain, 0x03=permit2)
+ * - Bytes 1-20: Sponsor address (20 bytes)
+ * - Bytes 21-31: Freely chosen nonce fragment (11 bytes)
+ *
+ * @param sponsor - The sponsor's address
+ * @param chainId - The chain ID
+ * @param db - Database connection
+ * @param command - The nonce command type (defaults to OFF_CHAIN for allocator-signed)
+ * @param allocatorAddress - Optional allocator address for on-chain consumption checks
+ * @returns The generated hybrid nonce as a bigint
+ */
 export async function generateNonce(
   sponsor: string,
   chainId: string,
   db: PGlite,
-  allocatorAddress?: string
+  allocatorAddress?: string,
+  command: NonceCommand = NonceCommand.OFF_CHAIN
 ): Promise<bigint> {
+  const normalizedSponsor = getAddress(sponsor);
   const sponsorBytes = Buffer.from(
-    getAddress(sponsor).toLowerCase().slice(2),
+    normalizedSponsor.toLowerCase().slice(2),
     'hex'
   );
 
-  const result = await db.query<{ next_nonce: string }>(
-    `-- This query finds the first available 12-byte nonce fragment for a given sponsor and chain.
-    -- The nonce is represented as two parts:
-    --   1. nonce_high (uint64): The upper 8 bytes
-    --   2. nonce_low (uint32): The lower 4 bytes
-    
-    WITH numbered_gaps AS (
-        SELECT 
-            nonce_high,
-            nonce_low,
-            LEAD(nonce_high) OVER w as next_high,
-            LEAD(nonce_low) OVER w as next_low
-        FROM nonces 
-        WHERE chain_id = $1 
-        AND sponsor = $2
-        -- Order by high * 2^32 + low for sequential ordering
-        WINDOW w AS (ORDER BY (nonce_high::numeric * (2^32)::numeric) + nonce_low::numeric)
-    ),
-    gaps AS (
-        -- Check for gaps in the sequence treating high/low as a single number
-        SELECT 
-            CASE 
-                -- If incrementing low would overflow
-                WHEN nonce_low = 2147483647 THEN nonce_high + 1
-                ELSE nonce_high
-            END as gap_high,
-            CASE 
-                WHEN nonce_low = 2147483647 THEN 0
-                ELSE nonce_low + 1
-            END as gap_low
-        FROM numbered_gaps
-        WHERE 
-            -- Check if next value (if it exists) is more than current + 1
-            next_high IS NULL 
-            OR (next_high::numeric * (2^32)::numeric) + next_low::numeric > 
-               (nonce_high::numeric * (2^32)::numeric) + nonce_low::numeric + 1
-        UNION ALL
-        -- Handle case where (0,0) is available
-        SELECT 0, 0
-        WHERE NOT EXISTS (
-            SELECT 1 FROM nonces 
-            WHERE chain_id = $1 
-            AND sponsor = $2 
-            AND nonce_high = 0 
-            AND nonce_low = 0
-        )
-    )
-    SELECT 
-        COALESCE(
-            -- First available gap if one exists
-            (SELECT (gap_high, gap_low)::text 
-             FROM (
-                 SELECT gap_high, gap_low 
-                 FROM gaps 
-                 ORDER BY (gap_high::numeric * (2^32)::numeric) + gap_low::numeric
-                 LIMIT 1
-             ) g),
-            -- Otherwise use next value after highest
-            (SELECT 
-                CASE 
-                    -- If we can increment low, do that
-                    WHEN MAX(nonce_low) < 2147483647 
-                    THEN (MAX(nonce_high), MAX(nonce_low) + 1)::text
-                    -- Otherwise carry to next high value
-                    ELSE (MAX(nonce_high) + 1, 0)::text
-                END
-             FROM nonces 
-             WHERE chain_id = $1 
-             AND sponsor = $2),
-            -- If no records exist, start at (0,0)
-            '(0,0)'
-        ) as next_nonce`,
+  // Query for the highest nonce fragment used by this sponsor on this chain
+  const result = await db.query<{ max_low: number | null }>(
+    `SELECT MAX(nonce_low) as max_low
+     FROM nonces
+     WHERE chain_id = $1 AND sponsor = $2`,
     [chainId, sponsorBytes]
   );
 
-  // Parse the (high, low) tuple from postgres
-  const match = result.rows[0].next_nonce.match(/\((\d+),(\d+)\)/);
-  if (!match) throw new Error('Invalid nonce format returned');
+  // Generate next fragment (start from 1 if none exists)
+  const nextFragment = BigInt((result.rows[0]?.max_low ?? 0) + 1);
 
-  const [high, low] = [BigInt(match[1]), BigInt(match[2])];
-
-  // Create a buffer for the complete nonce (32 bytes: 20 + 8 + 4)
-  const nonceBuffer = Buffer.alloc(32);
-
-  // Copy sponsor (20 bytes)
-  sponsorBytes.copy(nonceBuffer, 0);
-
-  // Write high value (8 bytes)
-  nonceBuffer.writeBigUInt64BE(high, 20);
-
-  // Write low value (4 bytes)
-  nonceBuffer.writeUInt32BE(Number(low), 28);
-
-  // Convert the complete buffer to BigInt
-  const generatedNonce = BigInt('0x' + nonceBuffer.toString('hex'));
+  // Construct hybrid nonce with the specified command
+  const generatedNonce = constructHybridNonce(
+    command,
+    normalizedSponsor,
+    nextFragment
+  );
 
   // If allocator address is provided, check if the nonce is consumed on-chain
   if (allocatorAddress) {
@@ -136,51 +65,95 @@ export async function generateNonce(
     );
 
     // If consumed on-chain but not in local DB, recursively try the next nonce
-    // This handles the edge case where the indexer knows about a nonce our DB doesn't
     if (isConsumedOnChain) {
       // Store the nonce as used in local DB to sync state
       await storeNonce(generatedNonce, chainId, db);
       // Try generating the next nonce
-      return generateNonce(sponsor, chainId, db, allocatorAddress);
+      return generateNonce(sponsor, chainId, db, allocatorAddress, command);
     }
   }
 
   return generatedNonce;
 }
 
+/**
+ * Validate a hybrid nonce.
+ *
+ * Hybrid Nonce Structure (32 bytes):
+ * - Byte 0: Command (0x01=on-chain, 0x02=off-chain, 0x03=permit2)
+ * - Bytes 1-20: Sponsor address (20 bytes)
+ * - Bytes 21-31: Freely chosen nonce fragment (11 bytes)
+ *
+ * @param nonce - The nonce to validate
+ * @param sponsor - Expected sponsor address
+ * @param chainId - The chain ID
+ * @param db - Database connection
+ * @param allocatorAddress - Optional allocator address for on-chain consumption checks
+ * @param expectedCommand - Optional expected command type for validation
+ * @returns Validation result
+ */
 export async function validateNonce(
   nonce: bigint,
   sponsor: string,
   chainId: string,
   db: PGlite,
-  allocatorAddress?: string
+  allocatorAddress?: string,
+  expectedCommand?: NonceCommand
 ): Promise<ValidationResult> {
   try {
-    // Convert nonce to 32-byte hex string (without 0x prefix) and lowercase
-    const nonceHex = bigintToHex(nonce);
+    // Parse the hybrid nonce to extract components
+    let parsed;
+    try {
+      parsed = parseHybridNonce(nonce);
+    } catch (error) {
+      return {
+        isValid: false,
+        error: `Invalid hybrid nonce format: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
 
-    // Split nonce into sponsor and fragment parts
-    const sponsorPart = nonceHex.slice(0, 40); // first 20 bytes = 40 hex chars
-    const fragmentPart = nonceHex.slice(40); // remaining 12 bytes = 24 hex chars
+    // Validate command byte
+    if (
+      parsed.command !== NonceCommand.ON_CHAIN &&
+      parsed.command !== NonceCommand.OFF_CHAIN &&
+      parsed.command !== NonceCommand.PERMIT2
+    ) {
+      return {
+        isValid: false,
+        error: `Invalid nonce command byte: 0x${(parsed.command as number).toString(16).padStart(2, '0')}`,
+      };
+    }
+
+    // If expected command is specified, check it matches
+    if (expectedCommand !== undefined && parsed.command !== expectedCommand) {
+      const commandNames: Record<number, string> = {
+        [NonceCommand.ON_CHAIN]: 'ON_CHAIN (0x01)',
+        [NonceCommand.OFF_CHAIN]: 'OFF_CHAIN (0x02)',
+        [NonceCommand.PERMIT2]: 'PERMIT2 (0x03)',
+      };
+      return {
+        isValid: false,
+        error: `Nonce command mismatch: expected ${commandNames[expectedCommand]}, got ${commandNames[parsed.command]}`,
+      };
+    }
 
     // Check that the sponsor part matches the sponsor's address (both lowercase)
-    const sponsorAddress = getAddress(sponsor).toLowerCase().slice(2);
+    const normalizedExpected = getAddress(sponsor).toLowerCase();
+    const normalizedParsed = parsed.sponsor.toLowerCase();
 
-    if (sponsorPart !== sponsorAddress) {
+    if (normalizedExpected !== normalizedParsed) {
       return {
         isValid: false,
         error: 'Nonce does not match sponsor address',
       };
     }
 
-    // Extract high and low parts from fragment
-    const fragmentBigInt = BigInt('0x' + fragmentPart);
-    const nonceLowUnsigned = fragmentBigInt & BigInt(0xffffffff);
-    const nonceHighUnsigned = fragmentBigInt >> BigInt(32);
+    // Convert fragment to nonce_low for database lookup
+    // The fragment is 11 bytes (88 bits), we store the lower 32 bits as nonce_low
+    const nonceLowUnsigned = parsed.fragment & BigInt(0xffffffff);
+    const nonceHighUnsigned = parsed.fragment >> BigInt(32);
 
     // Convert unsigned values to signed for PostgreSQL storage
-    // PostgreSQL integer: -2^31 to 2^31-1, so values >= 2^31 become negative
-    // PostgreSQL bigint: -2^63 to 2^63-1, so values >= 2^63 become negative
     const nonceLow =
       nonceLowUnsigned >= BigInt(0x80000000)
         ? Number(nonceLowUnsigned - BigInt(0x100000000))
@@ -234,26 +207,29 @@ export async function validateNonce(
   }
 }
 
+/**
+ * Store a hybrid nonce in the database.
+ *
+ * @param nonce - The hybrid nonce to store
+ * @param chainId - The chain ID
+ * @param db - Database connection
+ */
 export async function storeNonce(
   nonce: bigint,
   chainId: string,
   db: PGlite
 ): Promise<void> {
-  // Convert nonce to 32-byte hex string (without 0x prefix) and lowercase
-  const nonceHex = bigintToHex(nonce);
+  // Parse the hybrid nonce to extract components
+  const parsed = parseHybridNonce(nonce);
 
-  // Split nonce into sponsor and fragment parts
-  const sponsorPart = nonceHex.slice(0, 40); // first 20 bytes = 40 hex chars
-  const fragmentPart = nonceHex.slice(40); // remaining 12 bytes = 24 hex chars
+  // Convert sponsor to bytes
+  const sponsorBytes = addressToBytes(parsed.sponsor);
 
-  // Extract high and low parts from fragment
-  const fragmentBigInt = BigInt('0x' + fragmentPart);
-  const nonceLowUnsigned = fragmentBigInt & BigInt(0xffffffff);
-  const nonceHighUnsigned = fragmentBigInt >> BigInt(32);
+  // Convert fragment to nonce_high and nonce_low for database storage
+  const nonceLowUnsigned = parsed.fragment & BigInt(0xffffffff);
+  const nonceHighUnsigned = parsed.fragment >> BigInt(32);
 
   // Convert unsigned values to signed for PostgreSQL storage
-  // PostgreSQL integer: -2^31 to 2^31-1, so values >= 2^31 become negative
-  // PostgreSQL bigint: -2^63 to 2^63-1, so values >= 2^63 become negative
   const nonceLow =
     nonceLowUnsigned >= BigInt(0x80000000)
       ? Number(nonceLowUnsigned - BigInt(0x100000000))
@@ -264,20 +240,22 @@ export async function storeNonce(
       ? Number(nonceHighUnsigned - BigInt('0x10000000000000000'))
       : Number(nonceHighUnsigned);
 
+  // Determine nonce_command value (or null if not a valid command)
+  const nonceCommand =
+    parsed.command === NonceCommand.ON_CHAIN ||
+    parsed.command === NonceCommand.OFF_CHAIN ||
+    parsed.command === NonceCommand.PERMIT2
+      ? parsed.command
+      : null;
+
   // Lock the nonces table for this sponsor and chain before inserting
   await db.query(
     'SELECT 1 FROM nonces WHERE chain_id = $1 AND sponsor = $2 FOR UPDATE',
-    [chainId, hexToBytes(toHexString(sponsorPart))]
+    [chainId, sponsorBytes]
   );
 
   await db.query(
-    'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low) VALUES ($1, $2, $3, $4, $5)',
-    [
-      randomUUID(),
-      chainId,
-      hexToBytes(toHexString(sponsorPart)),
-      nonceHigh,
-      nonceLow,
-    ]
+    'INSERT INTO nonces (id, chain_id, sponsor, nonce_high, nonce_low, nonce_command) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chain_id, sponsor, nonce_high, nonce_low) DO NOTHING',
+    [randomUUID(), chainId, sponsorBytes, nonceHigh, nonceLow, nonceCommand]
   );
 }

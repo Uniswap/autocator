@@ -1,5 +1,5 @@
-// Default to production URL
-const DEFAULT_GRAPHQL_URL = 'https://the-compact-indexer-2.ponder-dev.com/';
+// Default to production URLs
+const DEFAULT_GRAPHQL_URL = 'https://unified-compact-indexer.marble.live/';
 
 interface Config {
   graphqlUrl: string;

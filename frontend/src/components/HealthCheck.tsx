@@ -1,44 +1,30 @@
 import React, { useEffect, useState } from 'react';
-
-interface HealthStatus {
-  status: string;
-  allocatorAddress: string;
-  signingAddress: string;
-  timestamp: string;
-}
+import { useAllocatorConfig } from '../hooks/useAllocatorConfig';
 
 interface HealthCheckProps {
   onHealthStatusChange?: (isHealthy: boolean) => void;
 }
 
 const HealthCheck: React.FC<HealthCheckProps> = ({ onHealthStatusChange }) => {
-  const [healthData, setHealthData] = useState<HealthStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { allocatorAddress, signingAddress, isHealthy, isLoading } =
+    useAllocatorConfig();
+  const [timestamp, setTimestamp] = useState<string>(new Date().toISOString());
 
+  // Update timestamp every second for display
   useEffect(() => {
-    const fetchHealthData = async () => {
-      try {
-        const response = await fetch('/health');
-        if (!response.ok) throw new Error('Allocator server unavailable');
-        const data: HealthStatus = await response.json();
-        setHealthData(data);
-        setError(null);
-        onHealthStatusChange?.(data.status === 'healthy');
-      } catch (error) {
-        console.error('Error fetching health status:', error);
-        setError('Allocator server unavailable');
-        onHealthStatusChange?.(false);
-      }
-    };
+    const intervalId = setInterval(() => {
+      setTimestamp(new Date().toISOString());
+    }, 1000);
 
-    // Fetch health data every second
-    const intervalId = setInterval(fetchHealthData, 1000);
-
-    // Cleanup interval on component unmount
     return () => clearInterval(intervalId);
-  }, [onHealthStatusChange]);
+  }, []);
 
-  if (error) {
+  // Notify parent of health status changes
+  useEffect(() => {
+    onHealthStatusChange?.(isHealthy);
+  }, [isHealthy, onHealthStatusChange]);
+
+  if (!isHealthy && !isLoading) {
     return (
       <div className="p-4 bg-red-900/20 border border-red-700/30 rounded-lg">
         <div className="flex items-start">
@@ -56,14 +42,16 @@ const HealthCheck: React.FC<HealthCheckProps> = ({ onHealthStatusChange }) => {
             </svg>
           </div>
           <div className="ml-3">
-            <h3 className="text-sm font-medium text-red-800">{error}</h3>
+            <h3 className="text-sm font-medium text-red-800">
+              Allocator server unavailable
+            </h3>
           </div>
         </div>
       </div>
     );
   }
 
-  if (!healthData) {
+  if (isLoading || !allocatorAddress) {
     return (
       <div className="flex justify-center items-center py-4">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#00ff00]"></div>
@@ -78,20 +66,19 @@ const HealthCheck: React.FC<HealthCheckProps> = ({ onHealthStatusChange }) => {
         <div className="flex items-center gap-2">
           <span className="text-sm text-gray-400">Allocator:</span>
           <span className="text-lg font-mono text-[#00ff00]">
-            {healthData.allocatorAddress}
+            {allocatorAddress}
           </span>
         </div>
         <div className="flex items-center gap-2 w-[180px] justify-end">
           <span className="text-gray-400 text-sm pr-2">Status:</span>
           <span
             className={`px-2 py-0.5 text-xs rounded ${
-              healthData.status === 'healthy'
+              isHealthy
                 ? 'bg-[#00ff00]/10 text-[#00ff00]'
                 : 'bg-red-500/10 text-red-500'
             }`}
           >
-            {healthData.status.charAt(0).toUpperCase() +
-              healthData.status.slice(1)}
+            {isHealthy ? 'Healthy' : 'Unhealthy'}
           </span>
         </div>
       </div>
@@ -100,14 +87,12 @@ const HealthCheck: React.FC<HealthCheckProps> = ({ onHealthStatusChange }) => {
       <div className="flex items-center justify-between text-sm">
         <div className="flex items-center gap-2">
           <span className="text-gray-400">Signer:</span>
-          <span className="font-mono text-[#00ff00]">
-            {healthData.signingAddress}
-          </span>
+          <span className="font-mono text-[#00ff00]">{signingAddress}</span>
         </div>
         <div className="flex items-center gap-2 w-[180px] justify-end whitespace-nowrap">
           <span className="text-gray-400">Last Checked:</span>
           <span className="font-mono text-[#00ff00]">
-            {new Date(healthData.timestamp).toLocaleTimeString(undefined, {
+            {new Date(timestamp).toLocaleTimeString(undefined, {
               hour12: false,
               hour: '2-digit',
               minute: '2-digit',

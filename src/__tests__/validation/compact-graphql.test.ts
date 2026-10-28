@@ -49,26 +49,43 @@ describe('Compact GraphQL Validation', () => {
   });
 
   it('should validate with sufficient balance', async (): Promise<void> => {
-    graphqlClient.request = async (): Promise<
-      AccountDeltasResponse & AccountResponse
-    > => ({
-      accountDeltas: {
-        items: [],
-      },
-      account: {
-        resourceLocks: {
-          items: [
-            {
-              withdrawalStatus: 0,
-              balance: '1000000000000000000000', // 1000 ETH
-            },
-          ],
-        },
-        claims: {
+    (graphqlClient as { request: GraphQLRequestFn }).request = async (
+      document: string | GraphQLDocument,
+      _variables?: Record<string, unknown>
+    ): Promise<
+      SupportedChainsResponse | (AccountDeltasResponse & AccountResponse)
+    > => {
+      const query = typeof document === 'string' ? document : document.source;
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return { allocations: { items: [] } } as unknown as
+          | SupportedChainsResponse
+          | (AccountDeltasResponse & AccountResponse);
+      }
+
+      return {
+        accountDeltas: {
           items: [],
         },
-      },
-    });
+        account: {
+          resourceLocks: {
+            items: [
+              {
+                withdrawalStatus: 0,
+                balance: '1000000000000000000000', // 1000 ETH
+              },
+            ],
+          },
+          claims: {
+            items: [],
+          },
+        },
+      };
+    };
 
     const result = await validateCompact(
       compactToAPI(getFreshCompact()),
@@ -79,26 +96,43 @@ describe('Compact GraphQL Validation', () => {
   });
 
   it('should reject with insufficient balance', async (): Promise<void> => {
-    graphqlClient.request = async (): Promise<
-      AccountDeltasResponse & AccountResponse
-    > => ({
-      accountDeltas: {
-        items: [],
-      },
-      account: {
-        resourceLocks: {
-          items: [
-            {
-              withdrawalStatus: 0,
-              balance: '1', // Very small balance
-            },
-          ],
-        },
-        claims: {
+    (graphqlClient as { request: GraphQLRequestFn }).request = async (
+      document: string | GraphQLDocument,
+      _variables?: Record<string, unknown>
+    ): Promise<
+      SupportedChainsResponse | (AccountDeltasResponse & AccountResponse)
+    > => {
+      const query = typeof document === 'string' ? document : document.source;
+
+      // Handle GetAllocations query for on-chain allocated balance
+      if (
+        query.includes('GetAllocations') ||
+        query.includes('allocations(where')
+      ) {
+        return { allocations: { items: [] } } as unknown as
+          | SupportedChainsResponse
+          | (AccountDeltasResponse & AccountResponse);
+      }
+
+      return {
+        accountDeltas: {
           items: [],
         },
-      },
-    });
+        account: {
+          resourceLocks: {
+            items: [
+              {
+                withdrawalStatus: 0,
+                balance: '1', // Very small balance
+              },
+            ],
+          },
+          claims: {
+            items: [],
+          },
+        },
+      };
+    };
 
     const result = await validateCompact(
       compactToAPI(getFreshCompact()),

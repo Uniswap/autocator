@@ -1,17 +1,64 @@
 import {
   mainnet,
   optimism,
-  optimismGoerli,
+  optimismSepolia,
   sepolia,
-  goerli,
   base,
   baseSepolia,
+  arbitrum,
+  arbitrumSepolia,
 } from 'viem/chains';
-import { unichain } from '../config/wagmi';
+import { unichain, unichainSepolia } from '../config/wagmi';
 
 // The Compact V1 is deployed at the same address on all networks
 export const COMPACT_ADDRESS =
   '0x00000000000000171ede64904551eeDF3C6C9788' as const;
+
+// NOTE: HybridAllocator address is now fetched from the backend via /health endpoint
+// Use the useAllocatorConfig() hook to get the current allocator address
+
+// Tribunal arbiter is deployed at the same address on all networks
+export const TRIBUNAL_ADDRESS =
+  '0x000000000000790009689f43bAedb61D67D45bB8' as const;
+
+// Known arbiters that users can select from
+export interface ArbiterOption {
+  address: `0x${string}`;
+  name: string;
+  description: string;
+  isCustom?: boolean;
+}
+
+export const KNOWN_ARBITERS: ArbiterOption[] = [
+  {
+    address: TRIBUNAL_ADDRESS,
+    name: 'Tribunal',
+    description: 'Standard arbiter for cross-chain swaps',
+  },
+];
+
+// Special option for custom arbiter input
+export const CUSTOM_ARBITER_OPTION: ArbiterOption = {
+  address: '0x0000000000000000000000000000000000000000',
+  name: 'Custom',
+  description: 'Enter a custom arbiter address',
+  isCustom: true,
+};
+
+// Helper to get arbiter by address
+export function getArbiterByAddress(
+  address: string
+): ArbiterOption | undefined {
+  const normalizedAddress = address.toLowerCase();
+  return KNOWN_ARBITERS.find(
+    (arbiter) => arbiter.address.toLowerCase() === normalizedAddress
+  );
+}
+
+// Helper to check if address is a known arbiter
+export function isKnownArbiter(address: string): boolean {
+  return getArbiterByAddress(address) !== undefined;
+}
 
 // Chain configurations
 export const SUPPORTED_CHAINS = {
@@ -27,23 +74,17 @@ export const SUPPORTED_CHAINS = {
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://optimistic.etherscan.io',
   },
-  [optimismGoerli.id]: {
-    name: 'Optimism Goerli',
-    rpcUrl: 'https://opt-goerli.g.alchemy.com/v2/',
+  [optimismSepolia.id]: {
+    name: 'Optimism Sepolia',
+    rpcUrl: 'https://opt-sepolia.g.alchemy.com/v2/',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
-    blockExplorer: 'https://goerli-optimism.etherscan.io',
+    blockExplorer: 'https://sepolia-optimism.etherscan.io',
   },
   [sepolia.id]: {
     name: 'Sepolia',
     rpcUrl: 'https://eth-sepolia.g.alchemy.com/v2/',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://sepolia.etherscan.io',
-  },
-  [goerli.id]: {
-    name: 'Goerli',
-    rpcUrl: 'https://eth-goerli.g.alchemy.com/v2/',
-    compactAddress: COMPACT_ADDRESS as `0x${string}`,
-    blockExplorer: 'https://goerli.etherscan.io',
   },
   [base.id]: {
     name: 'Base',
@@ -57,11 +98,29 @@ export const SUPPORTED_CHAINS = {
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://sepolia.basescan.org',
   },
+  [arbitrum.id]: {
+    name: 'Arbitrum One',
+    rpcUrl: 'https://arb-mainnet.g.alchemy.com/v2/',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://arbiscan.io',
+  },
+  [arbitrumSepolia.id]: {
+    name: 'Arbitrum Sepolia',
+    rpcUrl: 'https://arb-sepolia.g.alchemy.com/v2/',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://sepolia.arbiscan.io',
+  },
   [unichain.id]: {
     name: 'Unichain',
     rpcUrl: 'https://mainnet.unichain.org',
     compactAddress: COMPACT_ADDRESS as `0x${string}`,
     blockExplorer: 'https://uniscan.xyz',
+  },
+  [unichainSepolia.id]: {
+    name: 'Unichain Sepolia',
+    rpcUrl: 'https://sepolia.unichain.org',
+    compactAddress: COMPACT_ADDRESS as `0x${string}`,
+    blockExplorer: 'https://sepolia.uniscan.xyz',
   },
 } as const;
 
@@ -229,6 +288,117 @@ export const ERC20_ABI = [
     ],
     name: 'approve',
     outputs: [{ name: '', type: 'bool' }],
+    type: 'function',
+  },
+] as const;
+
+// HybridAllocator ABI (key functions)
+export const HYBRID_ALLOCATOR_ABI = [
+  // View allocator ID (immutable per chain)
+  {
+    inputs: [],
+    name: 'ALLOCATOR_ID',
+    outputs: [{ name: '', type: 'uint96' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  // View owner
+  {
+    inputs: [],
+    name: 'owner',
+    outputs: [{ name: '', type: 'address' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  // Check if an address is an authorized signer
+  {
+    inputs: [{ name: 'signer', type: 'address' }],
+    name: 'signers',
+    outputs: [{ name: '', type: 'bool' }],
+    stateMutability: 'view',
+    type: 'function',
+  },
+  // Add a signer (owner only)
+  {
+    inputs: [{ name: 'signer_', type: 'address' }],
+    name: 'addSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Remove a signer (owner only)
+  {
+    inputs: [{ name: 'signer_', type: 'address' }],
+    name: 'removeSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Replace a signer (owner only)
+  {
+    inputs: [
+      { name: 'oldSigner_', type: 'address' },
+      { name: 'newSigner_', type: 'address' },
+    ],
+    name: 'replaceSigner',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Propose owner replacement
+  {
+    inputs: [{ name: 'newOwner_', type: 'address' }],
+    name: 'proposeOwnerReplacement',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Accept owner replacement
+  {
+    inputs: [],
+    name: 'acceptOwnerReplacement',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Allocate and register (on-chain allocation)
+  {
+    inputs: [
+      { name: 'recipient', type: 'address' },
+      { name: 'idsAndAmounts', type: 'uint256[2][]' },
+      { name: 'arbiter', type: 'address' },
+      { name: 'expires', type: 'uint256' },
+      { name: 'typehash', type: 'bytes32' },
+      { name: 'witness', type: 'bytes32' },
+    ],
+    name: 'allocateAndRegister',
+    outputs: [
+      { name: 'claimHash', type: 'bytes32' },
+      { name: 'ids', type: 'uint256[]' },
+      { name: 'nonce', type: 'uint256' },
+    ],
+    stateMutability: 'payable',
+    type: 'function',
+  },
+  // Authorize attestation for transfers
+  {
+    inputs: [
+      { name: 'from', type: 'address' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'expires', type: 'uint256' },
+      { name: 'idsAndAmounts', type: 'uint256[2][]' },
+    ],
+    name: 'authorizeAttestation',
+    outputs: [{ name: '', type: 'bytes32' }],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Check attested transfer
+  {
+    inputs: [{ name: 'attestationHash', type: 'bytes32' }],
+    name: 'attestations',
+    outputs: [{ name: 'expires', type: 'uint256' }],
+    stateMutability: 'view',
     type: 'function',
   },
 ] as const;

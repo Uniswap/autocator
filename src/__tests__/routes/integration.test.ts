@@ -7,12 +7,7 @@ import {
   generateValidCompactSignature,
   compactToAPI,
 } from '../utils/test-server';
-import {
-  graphqlClient,
-  AccountDeltasResponse,
-  AccountResponse,
-  fetchAndCacheSupportedChains,
-} from '../../graphql';
+import { graphqlClient, fetchAndCacheSupportedChains } from '../../graphql';
 
 describe('Integration Tests', () => {
   let server: FastifyInstance;
@@ -74,27 +69,78 @@ describe('Integration Tests', () => {
 
   describe('Allocation Flow', () => {
     it('should handle complete allocation flow: nonce -> compact -> balance', async () => {
-      // Mock GraphQL response with zero allocated balance
-      graphqlClient.request = async (): Promise<
-        AccountDeltasResponse & AccountResponse
-      > => ({
-        accountDeltas: {
-          items: [],
-        },
-        account: {
-          resourceLocks: {
-            items: [
-              {
-                withdrawalStatus: 0,
-                balance: '1000000000000000000000', // 1000 ETH total
+      // Mock GraphQL response with zero allocated balance - handle different query types
+      graphqlClient.request = async (
+        document: unknown,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        // Extract query string from document
+        const query =
+          typeof document === 'string'
+            ? document
+            : (document as { source?: string }).source || String(document);
+
+        // Handle GetAllocations query for on-chain allocated balance
+        if (
+          query.includes('GetAllocations') ||
+          query.includes('allocations(where')
+        ) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle GetSupportedChains query
+        if (query.includes('GetSupportedChains')) {
+          return {
+            allocator: {
+              supportedChains: {
+                items: [
+                  { chainId: '1', allocatorId: '1' },
+                  { chainId: '10', allocatorId: '1' },
+                  { chainId: '8453', allocatorId: '1' },
+                ],
               },
-            ],
-          },
-          claims: {
+            },
+          };
+        }
+
+        // Handle CheckConsumedNonce query
+        if (
+          query.includes('CheckConsumedNonce') ||
+          query.includes('consumedNonce')
+        ) {
+          return { consumedNonce: null };
+        }
+
+        // Handle GetFinalizedRegisteredCompact query
+        if (query.includes('registeredCompacts')) {
+          return { registeredCompacts: { items: [] } };
+        }
+
+        // Handle health check query
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Default response for compact details (GetDetails)
+        return {
+          accountDeltas: {
             items: [],
           },
-        },
-      });
+          account: {
+            resourceLocks: {
+              items: [
+                {
+                  withdrawalStatus: 0,
+                  balance: '1000000000000000000000', // 1000 ETH total
+                },
+              ],
+            },
+            claims: {
+              items: [],
+            },
+          },
+        };
+      };
 
       const freshCompact = getFreshCompact();
 
@@ -105,6 +151,9 @@ describe('Integration Tests', () => {
       });
       expect(initialNonceResponse.statusCode).toBe(200);
       const { nonce: initialNonce } = JSON.parse(initialNonceResponse.payload);
+
+      // Use the suggested nonce in the compact so it gets consumed
+      freshCompact.nonce = BigInt(initialNonce);
 
       // 2. Submit compact
       const compactData = compactToAPI(freshCompact);
@@ -129,23 +178,26 @@ describe('Integration Tests', () => {
       const submitResult = JSON.parse(submitResponse.payload);
       expect(submitResult).toHaveProperty('hash');
 
-      // Query compacts table
+      // Query compacts table with normalized schema
       await server.db.query(`
         SELECT 
-          id::text,
-          chain_id,
-          encode(claim_hash, 'hex') as claim_hash,
-          encode(arbiter, 'hex') as arbiter,
-          encode(sponsor, 'hex') as sponsor,
-          encode(nonce, 'hex') as nonce,
-          expires,
-          encode(lock_id, 'hex') as lock_id,
-          encode(amount, 'hex') as amount,
-          witness_type_string,
-          encode(witness_hash, 'hex') as witness_hash,
-          encode(signature, 'hex') as signature,
-          created_at
-        FROM compacts
+          c.id::text,
+          c.chain_id,
+          encode(c.claim_hash, 'hex') as claim_hash,
+          encode(c.sponsor, 'hex') as sponsor,
+          encode(c.nonce, 'hex') as nonce,
+          c.expires,
+          encode(ce.arbiter, 'hex') as arbiter,
+          encode(cc.lock_tag, 'hex') as lock_tag,
+          encode(cc.token, 'hex') as token,
+          encode(cc.amount, 'hex') as amount,
+          c.witness_type_string,
+          encode(c.witness_hash, 'hex') as witness_hash,
+          encode(c.signature, 'hex') as signature,
+          c.created_at
+        FROM compacts c
+        LEFT JOIN compact_elements ce ON ce.compact_id = c.id
+        LEFT JOIN compact_commitments cc ON cc.element_id = ce.id
       `);
 
       // 3. Verify updated balance

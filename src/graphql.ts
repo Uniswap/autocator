@@ -2,13 +2,27 @@ import { GraphQLClient } from 'graphql-request';
 import { FastifyInstance } from 'fastify';
 import { getFinalizationThreshold } from './chain-config';
 
-// GraphQL endpoint from environment
+// GraphQL endpoint from environment - uses unified indexer for all queries
 const INDEXER_ENDPOINT = process.env.INDEXER_URL
   ? `${process.env.INDEXER_URL.replace(/\/$/, '')}/graphql`
-  : 'http://localhost:4000/graphql';
+  : 'https://unified-compact-indexer.marble.live/graphql';
 
-// Create a singleton GraphQL client
+// Create singleton GraphQL client for unified indexer
 export const graphqlClient = new GraphQLClient(INDEXER_ENDPOINT);
+
+// Indexer health status
+interface IndexerHealthStatus {
+  indexer: boolean;
+  lastCheck: number;
+}
+
+let indexerHealthStatus: IndexerHealthStatus = {
+  indexer: false,
+  lastCheck: 0,
+};
+
+// Health check TTL in milliseconds (10 seconds)
+const HEALTH_CHECK_TTL = 10000;
 
 // Store supported chains data in memory
 let supportedChainsCache: Array<{
@@ -53,7 +67,7 @@ export interface SupportedChainsResponse {
         allocatorId: string;
       }>;
     };
-  };
+  } | null;
 }
 
 export interface AllResourceLocksResponse {
@@ -100,6 +114,18 @@ export async function fetchAndCacheSupportedChains(
       GET_SUPPORTED_CHAINS,
       { allocator: allocatorAddress.toLowerCase() }
     );
+
+    // Handle case where allocator hasn't been registered on-chain yet
+    if (!response.allocator) {
+      // Allocator not found in indexer - this is normal for new allocators
+      // Keep existing cache if we have one, otherwise leave as null
+      if (server) {
+        server.log.info(
+          `Allocator ${allocatorAddress} not yet indexed - supported chains cache not updated`
+        );
+      }
+      return;
+    }
 
     supportedChainsCache = response.allocator.supportedChains.items.map(
       (item) => ({
@@ -362,5 +388,436 @@ export function processCompactDetails(
     withdrawalStatus,
     balance,
     claimHashes,
+  };
+}
+
+// ============================================================
+// Hybrid Allocator Integration (via Unified Indexer)
+// ============================================================
+
+// Response types for hybrid allocator data
+export interface HybridAllocationResponse {
+  allocation: {
+    claimHash: string;
+    sponsorAddress: string;
+    nonce: string;
+    expires: string;
+    commitments: string; // JSON string of Lock[]
+    timestamp: string;
+  } | null;
+}
+
+export interface HybridAllocationsResponse {
+  allocations: {
+    items: Array<{
+      claimHash: string;
+      nonce: string;
+      expires: string;
+      commitments: string; // JSON string of Lock[]
+      timestamp: string;
+    }>;
+  };
+}
+
+export interface HybridSignersResponse {
+  signers: {
+    items: Array<{
+      address: string;
+      isActive: boolean;
+    }>;
+  };
+}
+
+export interface HybridAllocatorInstanceResponse {
+  allocatorInstance: {
+    allocatorId: string;
+    ownerAddress: string;
+    compactAddress: string;
+  } | null;
+}
+
+// Query to get allocation by claim hash
+export const GET_ALLOCATION_BY_CLAIM_HASH = `
+  query GetAllocation($claimHash: String!, $chainId: BigInt!) {
+    allocation(id: $claimHash) {
+      claimHash
+      sponsorAddress
+      nonce
+      expires
+      commitments
+      timestamp
+    }
+  }
+`;
+
+// Query to get allocations for a sponsor
+// Filters by expires > currentTimestamp to only include non-expired allocations
+// The caller should pass the current timestamp (adjusted for finalization)
+export const GET_ALLOCATIONS_FOR_SPONSOR = `
+  query GetAllocations($sponsor: String!, $chainId: BigInt!, $currentTimestamp: BigInt!) {
+    allocations(where: { sponsorAddress: $sponsor, chainId: $chainId, expires_gt: $currentTimestamp }) {
+      items {
+        claimHash
+        nonce
+        expires
+        commitments
+        timestamp
+      }
+    }
+  }
+`;
+
+// Query to get active signers
+export const GET_ACTIVE_SIGNERS = `
+  query GetActiveSigners {
+    signers(where: { isActive: true }) {
+      items {
+        address
+        isActive
+      }
+    }
+  }
+`;
+
+// Query to get allocator instance info
+export const GET_ALLOCATOR_INSTANCE = `
+  query GetAllocatorInstance($chainId: BigInt!) {
+    allocatorInstance(chainId: $chainId) {
+      allocatorId
+      ownerAddress
+      compactAddress
+    }
+  }
+`;
+
+// Query to check if a compact has been registered on-chain (finalized)
+// Uses timestamp_lte filter to only return registrations older than finalization threshold
+export const GET_FINALIZED_REGISTERED_COMPACT = `
+  query GetFinalizedRegisteredCompact($claimHash: String!, $chainId: BigInt!, $finalizationTimestamp: BigInt!) {
+    registeredCompacts(
+      where: {
+        claimHash: $claimHash,
+        chainId: $chainId,
+        timestamp_lte: $finalizationTimestamp
+      },
+      limit: 1
+    ) {
+      items {
+        claimHash
+        sponsor
+        timestamp
+        blockNumber
+        typehash
+      }
+    }
+  }
+`;
+
+// Response type for registered compact query
+export interface FinalizedRegisteredCompactResponse {
+  registeredCompacts: {
+    items: Array<{
+      claimHash: string;
+      sponsor: string;
+      timestamp: string;
+      blockNumber: string;
+      typehash: string;
+    }>;
+  };
+}
+
+/**
+ * Check if a compact has been registered on-chain AND is finalized.
+ *
+ * IMPORTANT: This function throws on error to ensure fail-closed behavior.
+ * The allocator must verify on-chain registration before signing.
+ *
+ * Only returns registrations that are older than the chain's finalization
+ * threshold to protect against reorgs.
+ *
+ * @param claimHash - The claim hash of the compact
+ * @param chainId - The chain ID
+ * @returns The registered compact details, or null if not registered/finalized
+ * @throws Error if the indexer cannot be reached
+ */
+export async function getFinalizedRegisteredCompact(
+  claimHash: string,
+  chainId: string
+): Promise<
+  FinalizedRegisteredCompactResponse['registeredCompacts']['items'][0] | null
+> {
+  // Calculate finalization timestamp (current time - finalization threshold)
+  const { finalizationTimestamp } = calculateQueryTimestamps(chainId);
+
+  // Let errors propagate (fail-closed)
+  const response =
+    await graphqlClient.request<FinalizedRegisteredCompactResponse>(
+      GET_FINALIZED_REGISTERED_COMPACT,
+      {
+        claimHash,
+        chainId,
+        finalizationTimestamp: finalizationTimestamp.toString(),
+      }
+    );
+
+  return response.registeredCompacts.items[0] || null;
+}
+
+// Simple health check query (minimal query to test connectivity)
+const HEALTH_CHECK_QUERY = `
+  query HealthCheck {
+    __typename
+  }
+`;
+
+/**
+ * Check if an allocation exists in the indexer
+ */
+export async function getHybridAllocation(
+  claimHash: string,
+  chainId: string
+): Promise<HybridAllocationResponse['allocation']> {
+  try {
+    const response = await graphqlClient.request<HybridAllocationResponse>(
+      GET_ALLOCATION_BY_CLAIM_HASH,
+      { claimHash, chainId }
+    );
+    return response.allocation;
+  } catch (error) {
+    console.error('Error fetching hybrid allocation:', error);
+    return null;
+  }
+}
+
+/**
+ * Get all non-expired allocations for a sponsor from the indexer.
+ *
+ * IMPORTANT: This function throws on error to ensure fail-closed behavior.
+ * The allocator must NEVER issue allocations if on-chain state cannot be verified.
+ *
+ * Only returns allocations where expires > finalizationTimestamp. This means an
+ * allocation is considered "still active" if it hasn't expired from the perspective
+ * of the most recently finalized block. This protects against reorgs: if an allocation
+ * expires at time T and we're at time T+1, but the chain could reorg back to time T-1,
+ * we can't safely deallocate until we have a finalized block past time T.
+ *
+ * @param sponsor - The sponsor address
+ * @param chainId - The chain ID
+ * @returns Non-expired allocations for the sponsor (from finalized block perspective)
+ * @throws Error if allocations cannot be fetched
+ */
+export async function getHybridAllocationsForSponsor(
+  sponsor: string,
+  chainId: string
+): Promise<HybridAllocationsResponse['allocations']['items']> {
+  // Use finalization timestamp to determine which allocations have "safely expired"
+  // finalizationTimestamp = currentTime - finalizationThreshold
+  // Only allocations with expires > finalizationTimestamp are considered active
+  const { finalizationTimestamp } = calculateQueryTimestamps(chainId);
+
+  // Let errors propagate (fail-closed)
+  const response = await graphqlClient.request<HybridAllocationsResponse>(
+    GET_ALLOCATIONS_FOR_SPONSOR,
+    {
+      sponsor: sponsor.toLowerCase(),
+      chainId,
+      currentTimestamp: finalizationTimestamp.toString(),
+    }
+  );
+  return response.allocations.items;
+}
+
+/**
+ * Get active signers from the indexer
+ */
+export async function getActiveSigners(): Promise<string[]> {
+  try {
+    const response =
+      await graphqlClient.request<HybridSignersResponse>(GET_ACTIVE_SIGNERS);
+    return response.signers.items
+      .filter((s) => s.isActive)
+      .map((s) => s.address);
+  } catch (error) {
+    console.error('Error fetching active signers:', error);
+    return [];
+  }
+}
+
+// Lock interface for parsing commitments JSON
+interface Lock {
+  lockTag: string;
+  token: string;
+  amount: string;
+}
+
+/**
+ * Get on-chain allocated balance for a specific sponsor and lockId from the indexer.
+ * This sums up all allocation amounts that:
+ * 1. Match the sponsor address
+ * 2. Match the lockId (lockTag + token combination)
+ * 3. Haven't expired from the finalized block's perspective (filtered at query level)
+ * 4. Are not in the processed claims list
+ *
+ * IMPORTANT: This function throws on error to prevent over-allocation.
+ * The allocator must NEVER issue allocations if on-chain state cannot be verified.
+ *
+ * Note: Expiration filtering is done at the GraphQL query level using the finalization
+ * timestamp (currentTime - finalizationThreshold). This ensures we only deallocate
+ * allocations that have expired from the perspective of finalized blocks, protecting
+ * against reorgs.
+ *
+ * @param sponsor - The sponsor address
+ * @param chainId - The chain ID
+ * @param lockId - The lock ID (lockTag << 160 | token)
+ * @param processedClaimHashes - List of claim hashes that have already been processed
+ * @returns Total on-chain allocated balance for the lockId
+ * @throws Error if on-chain allocations cannot be fetched
+ */
+export async function getOnChainAllocatedBalance(
+  sponsor: string,
+  chainId: string,
+  lockId: bigint,
+  processedClaimHashes: string[]
+): Promise<bigint> {
+  // Fetch non-expired allocations (filtered by finalization timestamp at query level)
+  // Let errors propagate (fail-closed)
+  const allocations = await getHybridAllocationsForSponsor(sponsor, chainId);
+
+  if (allocations.length === 0) {
+    return BigInt(0);
+  }
+
+  // Convert processed claim hashes to lowercase for comparison
+  const processedClaimsSet = new Set(
+    processedClaimHashes.map((h) => h.toLowerCase())
+  );
+
+  // Extract lockTag and token from lockId for comparison
+  // Lock ID = (lockTag << 160) | token
+  const tokenMask = (BigInt(1) << BigInt(160)) - BigInt(1);
+  const targetToken = lockId & tokenMask;
+  const targetLockTag = lockId >> BigInt(160);
+
+  let totalAllocated = BigInt(0);
+
+  for (const allocation of allocations) {
+    // Note: Expiration is already filtered at the query level using finalization timestamp
+    // All allocations returned here have expires > finalizationTimestamp
+
+    // Skip already processed claims
+    if (processedClaimsSet.has(allocation.claimHash.toLowerCase())) {
+      continue;
+    }
+
+    // Parse commitments JSON - fail-closed on parse errors
+    let commitments: Lock[];
+    try {
+      commitments = JSON.parse(allocation.commitments) as Lock[];
+    } catch (parseError) {
+      // If we can't parse commitments, we can't safely determine allocation amounts
+      // Fail-closed to prevent potential over-allocation
+      throw new Error(
+        `Failed to parse commitments for allocation ${allocation.claimHash}: ` +
+          `${parseError instanceof Error ? parseError.message : String(parseError)}`
+      );
+    }
+
+    for (const commitment of commitments) {
+      // Normalize and compare lockTag and token
+      const commitmentLockTag = BigInt(commitment.lockTag);
+      const commitmentToken = BigInt(commitment.token);
+
+      if (
+        commitmentLockTag === targetLockTag &&
+        commitmentToken === targetToken
+      ) {
+        totalAllocated += BigInt(commitment.amount);
+      }
+    }
+  }
+
+  return totalAllocated;
+}
+
+/**
+ * Check health of the unified indexer
+ * Returns true only if the indexer is healthy (fail-closed behavior)
+ */
+export async function checkIndexersHealth(): Promise<{
+  allHealthy: boolean;
+  compactIndexer: boolean;
+  hybridAllocatorIndexer: boolean;
+}> {
+  const now = Date.now();
+
+  // Return cached status if still valid
+  if (now - indexerHealthStatus.lastCheck < HEALTH_CHECK_TTL) {
+    return {
+      allHealthy: indexerHealthStatus.indexer,
+      // Both report the same status since it's a unified indexer
+      compactIndexer: indexerHealthStatus.indexer,
+      hybridAllocatorIndexer: indexerHealthStatus.indexer,
+    };
+  }
+
+  // Check the unified indexer
+  const indexerHealth = await checkIndexerHealth();
+
+  // Update cached status
+  indexerHealthStatus = {
+    indexer: indexerHealth,
+    lastCheck: now,
+  };
+
+  return {
+    allHealthy: indexerHealth,
+    // Both report the same status since it's a unified indexer
+    compactIndexer: indexerHealth,
+    hybridAllocatorIndexer: indexerHealth,
+  };
+}
+
+/**
+ * Check if the unified indexer is healthy
+ */
+async function checkIndexerHealth(): Promise<boolean> {
+  try {
+    await graphqlClient.request(HEALTH_CHECK_QUERY);
+    return true;
+  } catch {
+    // Silently return false on health check failure - the caller will handle appropriately
+    return false;
+  }
+}
+
+/**
+ * Ensure the indexer is healthy before proceeding with off-chain allocation
+ * Throws an error if the indexer is unhealthy (fail-closed)
+ */
+export async function ensureIndexersHealthy(): Promise<void> {
+  const health = await checkIndexersHealth();
+
+  if (!health.allHealthy) {
+    throw new Error(
+      `Service temporarily unavailable: cannot verify allocation safety. ` +
+        `Unhealthy indexer: unified-compact-indexer`
+    );
+  }
+}
+
+/**
+ * Get the current indexer health status without making a new request
+ */
+export function getIndexerHealthStatus(): IndexerHealthStatus {
+  return { ...indexerHealthStatus };
+}
+
+/**
+ * Reset the indexer health cache (for testing purposes)
+ */
+export function resetIndexerHealthCache(): void {
+  indexerHealthStatus = {
+    indexer: true,
+    lastCheck: 0,
   };
 }

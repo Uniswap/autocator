@@ -15,26 +15,60 @@ describe('Balance Functions', () => {
   beforeAll(async () => {
     db = new PGlite();
 
-    // Create test table
+    // Create test tables using the new normalized schema
     await db.query(`
       CREATE TABLE IF NOT EXISTS compacts (
-        id TEXT PRIMARY KEY,
-        chain_id TEXT NOT NULL,
+        id UUID PRIMARY KEY,
+        chain_id bigint NOT NULL,
         claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
-        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        compact_type INTEGER NOT NULL DEFAULT 0 CHECK (compact_type IN (0, 1, 2)),
         sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
         nonce bytea NOT NULL CHECK (length(nonce) = 32),
         expires BIGINT NOT NULL,
-        lock_id bytea NOT NULL CHECK (length(lock_id) = 32),
-        amount bytea NOT NULL CHECK (length(amount) = 32),
+        signature bytea NOT NULL,
         witness_type_string TEXT,
         witness_hash bytea CHECK (witness_hash IS NULL OR length(witness_hash) = 32),
-        signature bytea NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(chain_id, claim_hash)
       )
     `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_elements (
+        id UUID PRIMARY KEY,
+        compact_id UUID NOT NULL REFERENCES compacts(id) ON DELETE CASCADE,
+        element_index INTEGER NOT NULL DEFAULT 0,
+        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        chain_id bigint NOT NULL,
+        mandate_hash bytea CHECK (mandate_hash IS NULL OR length(mandate_hash) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(compact_id, element_index)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_commitments (
+        id UUID PRIMARY KEY,
+        element_id UUID NOT NULL REFERENCES compact_elements(id) ON DELETE CASCADE,
+        lock_tag bytea NOT NULL CHECK (length(lock_tag) = 12),
+        token bytea NOT NULL CHECK (length(token) = 20),
+        amount bytea NOT NULL CHECK (length(amount) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
   });
+
+  // Helper to extract lock_tag and token from lockId (32-byte value)
+  function extractLockTagAndToken(lockIdBytes: Uint8Array): {
+    lockTag: Uint8Array;
+    token: Uint8Array;
+  } {
+    // lockId is 32 bytes: upper 12 bytes = lock_tag, lower 20 bytes = token
+    return {
+      lockTag: lockIdBytes.slice(0, 12),
+      token: lockIdBytes.slice(12),
+    };
+  }
 
   beforeEach(async () => {
     // Store original values
@@ -48,14 +82,18 @@ describe('Balance Functions', () => {
       [chainId]: mockFinalizationThreshold,
     };
 
-    // Clear test data
+    // Clear test data (order matters due to foreign keys)
+    await db.query('DELETE FROM compact_commitments');
+    await db.query('DELETE FROM compact_elements');
     await db.query('DELETE FROM compacts');
 
-    // Insert test compacts
+    // Insert test compacts using normalized schema
     const testData = [
       // Active compact (not expired)
       {
-        id: '1',
+        compactId: '123e4567-e89b-12d3-a456-426614174001',
+        elementId: '123e4567-e89b-12d3-a456-426614175001',
+        commitmentId: '123e4567-e89b-12d3-a456-426614176001',
         chain_id: '10',
         claim_hash: hexToBytes(
           '0x1000000000000000000000000000000000000000000000000000000000000001'
@@ -78,7 +116,9 @@ describe('Balance Functions', () => {
       },
       // Not fully expired compact (within finalization threshold)
       {
-        id: '2',
+        compactId: '123e4567-e89b-12d3-a456-426614174002',
+        elementId: '123e4567-e89b-12d3-a456-426614175002',
+        commitmentId: '123e4567-e89b-12d3-a456-426614176002',
         chain_id: '10',
         claim_hash: hexToBytes(
           '0x2000000000000000000000000000000000000000000000000000000000000002'
@@ -101,7 +141,9 @@ describe('Balance Functions', () => {
       },
       // Truly expired compact
       {
-        id: '3',
+        compactId: '123e4567-e89b-12d3-a456-426614174003',
+        elementId: '123e4567-e89b-12d3-a456-426614175003',
+        commitmentId: '123e4567-e89b-12d3-a456-426614176003',
         chain_id: '10',
         claim_hash: hexToBytes(
           '0x3000000000000000000000000000000000000000000000000000000000000003'
@@ -125,26 +167,47 @@ describe('Balance Functions', () => {
     ];
 
     for (const compact of testData) {
+      const { lockTag, token } = extractLockTagAndToken(compact.lock_id);
+
+      // Insert into compacts table
       await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
+        `INSERT INTO compacts (id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
-          compact.id,
+          compact.compactId,
           compact.chain_id,
           compact.claim_hash,
-          compact.arbiter,
+          0, // Legacy compact type
           compact.sponsor,
           compact.nonce,
           compact.expires,
-          compact.lock_id,
-          compact.amount,
           compact.signature,
+        ]
+      );
+
+      // Insert into compact_elements table
+      await db.query(
+        `INSERT INTO compact_elements (id, compact_id, element_index, arbiter, chain_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          compact.elementId,
+          compact.compactId,
+          0,
+          compact.arbiter,
+          compact.chain_id,
+        ]
+      );
+
+      // Insert into compact_commitments table
+      await db.query(
+        `INSERT INTO compact_commitments (id, element_id, lock_tag, token, amount)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          compact.commitmentId,
+          compact.elementId,
+          lockTag,
+          token,
+          compact.amount,
         ]
       );
     }
@@ -157,7 +220,9 @@ describe('Balance Functions', () => {
   });
 
   afterAll(async () => {
-    // Clean up
+    // Clean up (order matters due to foreign keys)
+    await db.query('DROP TABLE IF EXISTS compact_commitments');
+    await db.query('DROP TABLE IF EXISTS compact_elements');
     await db.query('DROP TABLE IF EXISTS compacts');
   });
 

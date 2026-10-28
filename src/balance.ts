@@ -5,9 +5,16 @@ import { hexToBytes } from 'viem/utils';
 /**
  * Calculate the total allocated balance for a given sponsor, chain, and resource lock
  * that hasn't been processed yet. This accounts for:
- * 1. Compacts that match the sponsor, chain ID, and lock ID
+ * 1. Compacts that match the sponsor, chain ID, and lock ID (lock_tag + token)
  * 2. Compacts that haven't been finalized yet (currentTime < expires + finalizationThreshold)
  * 3. Compacts that aren't in the processed claims list
+ *
+ * With the normalized schema:
+ * - compacts: contains sponsor, chain_id, expires, claim_hash
+ * - compact_elements: links compacts to commitments via arbiter/chain
+ * - compact_commitments: contains lock_tag, token, amount
+ *
+ * Lock ID = (lock_tag << 160) | token
  */
 export async function getAllocatedBalance(
   db: PGlite,
@@ -27,9 +34,18 @@ export async function getAllocatedBalance(
         : (`0x${sponsor}` as `0x${string}`)
     );
 
-    // Convert BigInt to proper hex string with 0x prefix and padding
-    const lockIdHex = '0x' + lockId.toString(16).padStart(64, '0');
-    const lockIdBytes = hexToBytes(lockIdHex as `0x${string}`);
+    // Extract lock_tag and token from lockId
+    // Lock ID = (lock_tag << 160) | token
+    const tokenMask = (BigInt(1) << BigInt(160)) - BigInt(1);
+    const token = lockId & tokenMask;
+    const lockTag = lockId >> BigInt(160);
+
+    // Convert to bytes
+    const lockTagHex = '0x' + lockTag.toString(16).padStart(24, '0'); // 12 bytes = 24 hex chars
+    const lockTagBytes = hexToBytes(lockTagHex as `0x${string}`);
+
+    const tokenHex = '0x' + token.toString(16).padStart(40, '0'); // 20 bytes = 40 hex chars
+    const tokenBytes = hexToBytes(tokenHex as `0x${string}`);
 
     const processedClaimBytea = processedClaimHashes.map((hash) =>
       hexToBytes(
@@ -42,18 +58,22 @@ export async function getAllocatedBalance(
     // Handle empty processed claims list case
     if (processedClaimHashes.length === 0) {
       const query = `
-        SELECT amount 
-        FROM compacts 
-        WHERE sponsor = $1 
-        AND chain_id = $2 
-        AND lock_id = $3
-        AND $4 < CAST(expires AS BIGINT) + $5
+        SELECT cc.amount 
+        FROM compacts c
+        JOIN compact_elements ce ON ce.compact_id = c.id
+        JOIN compact_commitments cc ON cc.element_id = ce.id
+        WHERE c.sponsor = $1 
+        AND c.chain_id = $2 
+        AND cc.lock_tag = $3
+        AND cc.token = $4
+        AND $5 < CAST(c.expires AS BIGINT) + $6
       `;
 
       const params = [
         sponsorBytes,
         chainId,
-        lockIdBytes,
+        lockTagBytes,
+        tokenBytes,
         currentTimeSeconds.toString(),
         finalizationThreshold.toString(),
       ];
@@ -71,19 +91,23 @@ export async function getAllocatedBalance(
 
     // Query with processed claims filter
     const query = `
-      SELECT amount 
-      FROM compacts 
-      WHERE sponsor = $1 
-      AND chain_id = $2 
-      AND lock_id = $3
-      AND $4 < CAST(expires AS BIGINT) + $5
-      AND claim_hash NOT IN (${processedClaimBytea.map((_, i) => `$${i + 6}`).join(',')})
+      SELECT cc.amount 
+      FROM compacts c
+      JOIN compact_elements ce ON ce.compact_id = c.id
+      JOIN compact_commitments cc ON cc.element_id = ce.id
+      WHERE c.sponsor = $1 
+      AND c.chain_id = $2 
+      AND cc.lock_tag = $3
+      AND cc.token = $4
+      AND $5 < CAST(c.expires AS BIGINT) + $6
+      AND c.claim_hash NOT IN (${processedClaimBytea.map((_, i) => `$${i + 7}`).join(',')})
     `;
 
     const params = [
       sponsorBytes,
       chainId,
-      lockIdBytes,
+      lockTagBytes,
+      tokenBytes,
       currentTimeSeconds.toString(),
       finalizationThreshold.toString(),
       ...processedClaimBytea,

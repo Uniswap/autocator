@@ -10,13 +10,7 @@ import {
   ValidatedMultichainCompactMessage,
   ValidatedCompactMessage,
 } from '../../validation/types';
-import {
-  graphqlClient,
-  AccountDeltasResponse,
-  AccountResponse,
-  fetchAndCacheSupportedChains,
-  SupportedChainsResponse,
-} from '../../graphql';
+import { graphqlClient, fetchAndCacheSupportedChains } from '../../graphql';
 import { setupGraphQLMocks } from '../utils/graphql-mock';
 import { getFreshCompact } from '../utils/test-server';
 
@@ -27,9 +21,7 @@ interface GraphQLDocument {
 type GraphQLRequestFn = (
   query: string | GraphQLDocument,
   variables?: Record<string, unknown>
-) => Promise<
-  SupportedChainsResponse | (AccountDeltasResponse & AccountResponse)
->;
+) => Promise<unknown>;
 
 describe('BatchCompact and MultichainCompact Allocation Validation', () => {
   let db: PGlite;
@@ -72,37 +64,133 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
   beforeAll(async (): Promise<void> => {
     db = new PGlite();
 
-    // Create test tables
+    // Create test tables using the new normalized schema
     await db.query(`
       CREATE TABLE IF NOT EXISTS compacts (
         id UUID PRIMARY KEY,
         chain_id bigint NOT NULL,
         claim_hash bytea NOT NULL CHECK (length(claim_hash) = 32),
-        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        compact_type INTEGER NOT NULL DEFAULT 0 CHECK (compact_type IN (0, 1, 2)),
         sponsor bytea NOT NULL CHECK (length(sponsor) = 20),
         nonce bytea NOT NULL CHECK (length(nonce) = 32),
         expires BIGINT NOT NULL,
-        lock_id bytea NOT NULL CHECK (length(lock_id) = 32),
-        amount bytea NOT NULL CHECK (length(amount) = 32),
+        signature bytea NOT NULL,
         witness_type_string TEXT,
         witness_hash bytea CHECK (witness_hash IS NULL OR length(witness_hash) = 32),
-        signature bytea NOT NULL,
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(chain_id, claim_hash)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_elements (
+        id UUID PRIMARY KEY,
+        compact_id UUID NOT NULL REFERENCES compacts(id) ON DELETE CASCADE,
+        element_index INTEGER NOT NULL DEFAULT 0,
+        arbiter bytea NOT NULL CHECK (length(arbiter) = 20),
+        chain_id bigint NOT NULL,
+        mandate_hash bytea CHECK (mandate_hash IS NULL OR length(mandate_hash) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(compact_id, element_index)
+      )
+    `);
+
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS compact_commitments (
+        id UUID PRIMARY KEY,
+        element_id UUID NOT NULL REFERENCES compact_elements(id) ON DELETE CASCADE,
+        lock_tag bytea NOT NULL CHECK (length(lock_tag) = 12),
+        token bytea NOT NULL CHECK (length(token) = 20),
+        amount bytea NOT NULL CHECK (length(amount) = 32),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
       )
     `);
   });
 
   afterAll(async (): Promise<void> => {
+    await db.query('DROP TABLE IF EXISTS compact_commitments');
+    await db.query('DROP TABLE IF EXISTS compact_elements');
     await db.query('DROP TABLE IF EXISTS compacts');
   });
+
+  // Counter for unique IDs across tests
+  let compactCounter = 0;
+
+  // Helper to insert a compact into the normalized schema
+  async function insertTestCompact(
+    sponsor: string,
+    chainIdVal: string,
+    claimHash: string,
+    arbiter: string,
+    nonce: bigint,
+    expires: bigint,
+    lockTag: string,
+    token: string,
+    amount: string
+  ): Promise<void> {
+    const compactId = `123e4567-e89b-12d3-a456-42661417${String(compactCounter).padStart(4, '0')}`;
+    const elementId = `123e4567-e89b-12d3-a456-42661418${String(compactCounter).padStart(4, '0')}`;
+    const commitmentId = `123e4567-e89b-12d3-a456-42661419${String(compactCounter).padStart(4, '0')}`;
+    compactCounter++;
+
+    // Insert into compacts table
+    await db.query(
+      `INSERT INTO compacts (id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        compactId,
+        chainIdVal,
+        hexToBytes(claimHash as `0x${string}`),
+        0, // Legacy compact type
+        hexToBytes(sponsor as `0x${string}`),
+        hexToBytes(
+          ('0x' + nonce.toString(16).padStart(64, '0')) as `0x${string}`
+        ),
+        expires.toString(),
+        hexToBytes(('0x' + '1'.repeat(130)) as `0x${string}`), // Dummy signature
+      ]
+    );
+
+    // Insert into compact_elements table
+    await db.query(
+      `INSERT INTO compact_elements (id, compact_id, element_index, arbiter, chain_id)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        elementId,
+        compactId,
+        0,
+        hexToBytes(arbiter as `0x${string}`),
+        chainIdVal,
+      ]
+    );
+
+    // Insert into compact_commitments table
+    await db.query(
+      `INSERT INTO compact_commitments (id, element_id, lock_tag, token, amount)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        commitmentId,
+        elementId,
+        hexToBytes(lockTag as `0x${string}`),
+        hexToBytes(token as `0x${string}`),
+        hexToBytes(
+          ('0x' +
+            BigInt(amount).toString(16).padStart(64, '0')) as `0x${string}`
+        ),
+      ]
+    );
+  }
 
   beforeEach(async (): Promise<void> => {
     originalRequest = graphqlClient.request;
     originalDateNow = Date.now;
     setupGraphQLMocks();
     await fetchAndCacheSupportedChains(process.env.ALLOCATOR_ADDRESS!);
+    // Clear all tables (order matters due to foreign keys)
+    await db.query('DELETE FROM compact_commitments');
+    await db.query('DELETE FROM compact_elements');
     await db.query('DELETE FROM compacts');
+    compactCounter = 0;
 
     // Mock Date.now() to return our fixed timestamp
     Date.now = () => mockTimestampMs;
@@ -144,16 +232,30 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL responses for each lock
-      let requestCount = 0;
+      let detailsRequestCount = 0;
       (graphqlClient as { request: GraphQLRequestFn }).request = async (
-        _document: string | GraphQLDocument,
+        document: string | GraphQLDocument,
         _variables?: Record<string, unknown>
-      ): Promise<AccountDeltasResponse & AccountResponse> => {
-        requestCount++;
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
 
-        // Return different balances for different locks
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Handle GetDetails query
+        detailsRequestCount++;
         const balance =
-          requestCount === 1 ? '2000000000000000000' : '3000000000000000000';
+          detailsRequestCount === 1
+            ? '2000000000000000000'
+            : '3000000000000000000';
 
         return {
           accountDeltas: {
@@ -177,7 +279,7 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
 
       const result = await validateBatchAllocation(batchCompact, chainId, db);
       expect(result.isValid).toBe(true);
-      expect(requestCount).toBe(2); // Should make one request per lock
+      expect(detailsRequestCount).toBe(2); // Should make one request per lock
     });
 
     it('rejects BatchCompact when one resource lock has insufficient balance', async (): Promise<void> => {
@@ -210,16 +312,31 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL responses - second lock has insufficient balance
-      let requestCount = 0;
+      let detailsRequestCount = 0;
       (graphqlClient as { request: GraphQLRequestFn }).request = async (
-        _document: string | GraphQLDocument,
+        document: string | GraphQLDocument,
         _variables?: Record<string, unknown>
-      ): Promise<AccountDeltasResponse & AccountResponse> => {
-        requestCount++;
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
 
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Handle GetDetails query
+        detailsRequestCount++;
         // First lock has enough, second doesn't
         const balance =
-          requestCount === 1 ? '2000000000000000000' : '1000000000000000000';
+          detailsRequestCount === 1
+            ? '2000000000000000000'
+            : '1000000000000000000';
 
         return {
           accountDeltas: {
@@ -249,7 +366,6 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('tracks allocations across multiple BatchCompacts targeting same lock', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
 
       // First batch compact
       const batchCompact1: ValidatedBatchCompactMessage = {
@@ -270,40 +386,17 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
         witnessHash: null,
       };
 
-      // Insert first compact into database
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174000',
-          chainId,
-          hexToBytes(('0x' + '1'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(
-            ('0x' +
-              batchCompact1.nonce
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          batchCompact1.expires.toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt(batchCompact1.commitments[0].amount)
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(('0x' + '1'.repeat(130)) as `0x${string}`),
-        ]
+      // Insert first compact into database using normalized schema
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + '1'.repeat(64),
+        testArbiter,
+        batchCompact1.nonce,
+        batchCompact1.expires,
+        lockTag,
+        token,
+        batchCompact1.commitments[0].amount
       );
 
       // Second batch compact targeting same lock
@@ -326,8 +419,25 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - total balance just enough for both
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Handle GetDetails query
+        return {
           accountDeltas: {
             items: [],
           },
@@ -344,7 +454,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       const result = await validateBatchAllocation(batchCompact2, chainId, db);
       expect(result.isValid).toBe(true);
@@ -353,37 +464,18 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('prevents overallocation when multiple BatchCompacts exceed available balance', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
 
       // Insert existing compact
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174000',
-          chainId,
-          hexToBytes(('0x' + '1'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + '1'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('1500000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(('0x' + '1'.repeat(130)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + '1'.repeat(64),
+        testArbiter,
+        BigInt('0x' + '1'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '1500000000000000000'
       );
 
       // New batch compact that would exceed available balance
@@ -406,8 +498,25 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - not enough for both
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Handle GetDetails query
+        return {
           accountDeltas: {
             items: [],
           },
@@ -424,7 +533,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       const result = await validateBatchAllocation(batchCompact, chainId, db);
       expect(result.isValid).toBe(false);
@@ -473,8 +583,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -491,7 +617,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Validate for chain 10
       const result = await validateMultichainAllocation(
@@ -541,68 +668,31 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('tracks allocations across different compact types targeting same lock', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
 
-      // Insert regular compact
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174001',
-          chainId,
-          hexToBytes(('0x' + '1'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + '1'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('500000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 0.5 ETH
-          hexToBytes(('0x' + '1'.repeat(130)) as `0x${string}`),
-        ]
+      // Insert regular compact - 0.5 ETH
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + '1'.repeat(64),
+        testArbiter,
+        BigInt('0x' + '1'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '500000000000000000'
       );
 
-      // Insert batch compact allocation
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174002',
-          chainId,
-          hexToBytes(('0x' + '2'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + '2'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('700000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 0.7 ETH
-          hexToBytes(('0x' + '2'.repeat(130)) as `0x${string}`),
-        ]
+      // Insert batch compact allocation - 0.7 ETH
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + '2'.repeat(64),
+        testArbiter,
+        BigInt('0x' + '2'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '700000000000000000'
       );
 
       // New multichain compact
@@ -630,8 +720,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - exactly 2 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -648,7 +754,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total: 0.5 + 0.7 + 0.8 = 2.0 ETH - should be valid
       const result = await validateMultichainAllocation(
@@ -662,37 +769,18 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('prevents overallocation across mixed compact types', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
 
       // Insert existing allocations totaling 1.5 ETH
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174003',
-          chainId,
-          hexToBytes(('0x' + '3'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + '3'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('1500000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 1.5 ETH
-          hexToBytes(('0x' + '3'.repeat(130)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + '3'.repeat(64),
+        testArbiter,
+        BigInt('0x' + '3'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '1500000000000000000'
       );
 
       // New multichain compact requesting 1 ETH
@@ -720,8 +808,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - only 2 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -738,7 +842,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total would be: 1.5 + 1 = 2.5 ETH - should fail
       const result = await validateMultichainAllocation(
@@ -786,31 +891,46 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
 
       // Mock different balances for different locks
       let requestCount = 0;
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => {
-          requestCount++;
-          const balance =
-            requestCount === 1 ? '1500000000000000000' : '2500000000000000000';
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
 
-          return {
-            accountDeltas: {
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        requestCount++;
+        const balance =
+          requestCount === 1 ? '1500000000000000000' : '2500000000000000000';
+
+        return {
+          accountDeltas: {
+            items: [],
+          },
+          account: {
+            resourceLocks: {
+              items: [
+                {
+                  withdrawalStatus: 0,
+                  balance,
+                },
+              ],
+            },
+            claims: {
               items: [],
             },
-            account: {
-              resourceLocks: {
-                items: [
-                  {
-                    withdrawalStatus: 0,
-                    balance,
-                  },
-                ],
-              },
-              claims: {
-                items: [],
-              },
-            },
-          };
+          },
         };
+      };
 
       const result = await validateMultichainAllocation(
         multichainCompact,
@@ -829,98 +949,42 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       const lockId = buildLockId(token, lockTag);
 
       // Insert regular compact - 0.5 ETH
-      // Ensure lock_id is exactly 32 bytes
-      const lockIdHex = '0x' + lockId.toString(16).padStart(64, '0');
-      const lockIdBytes = hexToBytes(lockIdHex as `0x${string}`);
-
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174010',
-          chainId,
-          hexToBytes(('0x' + 'a'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + 'a'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          lockIdBytes,
-          hexToBytes(
-            ('0x' +
-              BigInt('500000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(('0x' + 'a'.repeat(130)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + 'a'.repeat(64),
+        testArbiter,
+        BigInt('0x' + 'a'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '500000000000000000'
       );
 
       // Insert batch compact - 0.7 ETH
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174011',
-          chainId,
-          hexToBytes(('0x' + 'b'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + 'b'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('700000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(('0x' + 'b'.repeat(130)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + 'b'.repeat(64),
+        testArbiter,
+        BigInt('0x' + 'b'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '700000000000000000'
       );
 
       // Insert multichain compact - 0.8 ETH
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174012',
-          chainId,
-          hexToBytes(('0x' + 'c'.repeat(64)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + 'c'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('800000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(('0x' + 'c'.repeat(130)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        '0x' + 'c'.repeat(64),
+        testArbiter,
+        BigInt('0x' + 'c'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '800000000000000000'
       );
 
       // Total existing allocations: 0.5 + 0.7 + 0.8 = 2.0 ETH
@@ -941,8 +1005,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - 2.5 ETH available
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -959,7 +1039,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Total would be: 2.0 + 0.6 = 2.6 ETH > 2.5 ETH available - should fail
       const result = await validateAllocation(testCompact, chainId, db);
@@ -970,72 +1051,35 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('tracks allocations when some are processed claims', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
 
       // Insert multiple compacts
       const claimHash1 = '0x' + 'd'.repeat(64);
       const claimHash2 = '0x' + 'e'.repeat(64);
 
-      // Compact 1 - will be marked as processed
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174020',
-          chainId,
-          hexToBytes(claimHash1 as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + 'd'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('1000000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 1 ETH
-          hexToBytes(('0x' + 'd'.repeat(130)) as `0x${string}`),
-        ]
+      // Compact 1 - will be marked as processed - 1 ETH
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        claimHash1,
+        testArbiter,
+        BigInt('0x' + 'd'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '1000000000000000000'
       );
 
-      // Compact 2 - still pending
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174021',
-          chainId,
-          hexToBytes(claimHash2 as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(testSponsor as `0x${string}`),
-          hexToBytes(('0x' + 'e'.repeat(64)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('800000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 0.8 ETH
-          hexToBytes(('0x' + 'e'.repeat(130)) as `0x${string}`),
-        ]
+      // Compact 2 - still pending - 0.8 ETH
+      await insertTestCompact(
+        testSponsor,
+        chainId,
+        claimHash2,
+        testArbiter,
+        BigInt('0x' + 'e'.repeat(64)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '800000000000000000'
       );
 
       // New batch compact
@@ -1058,8 +1102,25 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       };
 
       // Mock GraphQL response - mark first claim as processed
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        // Handle GetDetails query
+        return {
           accountDeltas: {
             items: [],
           },
@@ -1080,7 +1141,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               ],
             },
           },
-        });
+        };
+      };
 
       // Allocated: 0.8 ETH (second compact, first is processed)
       // New request: 0.7 ETH
@@ -1092,38 +1154,19 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
     it('handles overlapping allocations with different sponsors', async (): Promise<void> => {
       const lockTag = createLockTag('1');
       const token = '0x0000000000000000000000000000000000000001';
-      const lockId = buildLockId(token, lockTag);
       const otherSponsor = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 
       // Insert compact from different sponsor - should not affect our validation
-      await db.query(
-        `
-        INSERT INTO compacts (
-          id, chain_id, claim_hash, arbiter, sponsor, nonce, expires,
-          lock_id, amount, signature
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-        )
-      `,
-        [
-          '123e4567-e89b-12d3-a456-426614174030',
-          chainId,
-          hexToBytes(('0x' + '1a'.repeat(32)) as `0x${string}`),
-          hexToBytes(testArbiter as `0x${string}`),
-          hexToBytes(otherSponsor as `0x${string}`), // Different sponsor
-          hexToBytes(('0x' + '1a'.repeat(32)) as `0x${string}`),
-          (mockTimestampSec + 3600).toString(),
-          hexToBytes(
-            ('0x' + lockId.toString(16).padStart(64, '0')) as `0x${string}`
-          ),
-          hexToBytes(
-            ('0x' +
-              BigInt('5000000000000000000')
-                .toString(16)
-                .padStart(64, '0')) as `0x${string}`
-          ), // 5 ETH
-          hexToBytes(('0x' + '1a'.repeat(65)) as `0x${string}`),
-        ]
+      await insertTestCompact(
+        otherSponsor,
+        chainId,
+        '0x' + '1a'.repeat(32),
+        testArbiter,
+        BigInt('0x' + '1a'.repeat(32)),
+        BigInt(mockTimestampSec + 3600),
+        lockTag,
+        token,
+        '5000000000000000000'
       );
 
       // Our sponsor's compact
@@ -1132,8 +1175,24 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
       compact.amount = '1000000000000000000'; // 1 ETH
 
       // Mock GraphQL response - only check our sponsor's balance
-      (graphqlClient as { request: GraphQLRequestFn }).request =
-        async (): Promise<AccountDeltasResponse & AccountResponse> => ({
+      (graphqlClient as { request: GraphQLRequestFn }).request = async (
+        document: string | GraphQLDocument,
+        _variables?: Record<string, unknown>
+      ): Promise<unknown> => {
+        const query =
+          typeof document === 'string' ? document : document.source || '';
+
+        // Handle GetAllocations query
+        if (query.includes('GetAllocations')) {
+          return { allocations: { items: [] } };
+        }
+
+        // Handle health check
+        if (query.includes('HealthCheck') || query.includes('__typename')) {
+          return { __typename: 'Query' };
+        }
+
+        return {
           accountDeltas: {
             items: [],
           },
@@ -1150,7 +1209,8 @@ describe('BatchCompact and MultichainCompact Allocation Validation', () => {
               items: [],
             },
           },
-        });
+        };
+      };
 
       // Should succeed since different sponsors have separate allocations
       const result = await validateAllocation(

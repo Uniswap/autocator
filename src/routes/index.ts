@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { setupHealthRoutes } from './health';
 import { setupBalanceRoutes } from './balance';
 import { setupCompactRoutes } from './compact';
+import { setupAllocationRoutes } from './allocation';
 
 // Declare db property on FastifyInstance
 declare module 'fastify' {
@@ -15,4 +16,5 @@ export async function setupRoutes(server: FastifyInstance): Promise<void> {
   await setupHealthRoutes(server);
   await setupBalanceRoutes(server);
   await setupCompactRoutes(server);
+  await setupAllocationRoutes(server);
 }

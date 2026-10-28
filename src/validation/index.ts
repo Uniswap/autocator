@@ -5,6 +5,8 @@ export * from './allocation';
 export * from './structure';
 export * from './domain';
 export * from './onchain-registration';
+export * from './hybrid-nonce';
+export * from './arbiter';
 
 // Export specific validation functions for each compact type
 export {

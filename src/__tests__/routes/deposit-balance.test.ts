@@ -331,100 +331,109 @@ describe('Deposit Balance Routes', () => {
     // Insert test compacts into database
     const db = await dbManager.getDb();
 
+    // Helper to insert a test compact using the new normalized schema
+    async function insertTestCompact(
+      compactId: string,
+      claimHash: string,
+      arbiter: string,
+      sponsor: string,
+      nonce: string,
+      expires: number,
+      lockTag: string, // 12 bytes for lock_tag
+      token: string, // 20 bytes for token
+      amount: string,
+      signature: string
+    ) {
+      // Generate unique element and commitment IDs by modifying the UUID
+      // Replace first char of last segment with 'e' for element, 'c' for commitment
+      const elementId = compactId.replace(/-(\w)(\w{11})$/, '-e$2');
+      const commitmentId = compactId.replace(/-(\w)(\w{11})$/, '-f$2');
+
+      // Insert into compacts table
+      await db.query(
+        `INSERT INTO compacts (id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          compactId,
+          chainId,
+          hexToBytes(claimHash as `0x${string}`),
+          0, // Legacy compact type
+          hexToBytes(sponsor as `0x${string}`),
+          hexToBytes(nonce as `0x${string}`),
+          expires,
+          hexToBytes(signature as `0x${string}`),
+        ]
+      );
+
+      // Insert into compact_elements table
+      await db.query(
+        `INSERT INTO compact_elements (id, compact_id, element_index, arbiter, chain_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [elementId, compactId, 0, hexToBytes(arbiter as `0x${string}`), chainId]
+      );
+
+      // Insert into compact_commitments table
+      await db.query(
+        `INSERT INTO compact_commitments (id, element_id, lock_tag, token, amount)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          commitmentId,
+          elementId,
+          hexToBytes(lockTag as `0x${string}`),
+          hexToBytes(token as `0x${string}`),
+          hexToBytes(
+            ('0x' +
+              BigInt(amount).toString(16).padStart(64, '0')) as `0x${string}`
+          ),
+        ]
+      );
+    }
+
+    // Extract lock_tag (12 bytes) and token (20 bytes) from lockId
+    // lockId is 32 bytes: upper 12 bytes = lock_tag, lower 20 bytes = token
+    const lockTagHex = lockId.slice(0, 26); // 0x + 24 hex chars = 12 bytes
+    const tokenHex = '0x' + lockId.slice(26); // remaining 40 hex chars = 20 bytes
+
     // 1. Insert finalized compact (already processed)
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174002',
-        chainId,
-        hexToBytes(
-          '0x1234567890123456789012345678901234567890123456789012345678901234'
-        ), // Same as finalized claim hash
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000003'
-        ),
-        currentTime + 3600, // Not expired, but finalized via claim
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(finalizedAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001236'
-        ),
-      ]
+    await insertTestCompact(
+      '123e4567-e89b-12d3-a456-426614174002',
+      '0x1234567890123456789012345678901234567890123456789012345678901234', // Same as finalized claim hash
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000003',
+      currentTime + 3600, // Not expired, but finalized via claim
+      lockTagHex,
+      tokenHex,
+      finalizedAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000001236'
     );
 
     // 2. Insert unprocessed compact (not expired)
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174000',
-        chainId,
-        hexToBytes(
-          '0x2000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        currentTime + 3600, // Expires in 1 hour
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(unprocessedAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001234'
-        ),
-      ]
+    await insertTestCompact(
+      '123e4567-e89b-12d3-a456-426614174000',
+      '0x2000000000000000000000000000000000000000000000000000000000000001',
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000001',
+      currentTime + 3600, // Expires in 1 hour
+      lockTagHex,
+      tokenHex,
+      unprocessedAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000001234'
     );
 
     // 3. Insert expired compact
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174001',
-        chainId,
-        hexToBytes(
-          '0x3000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000002'
-        ),
-        currentTime - 3600, // Expired 1 hour ago
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(expiredAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001235'
-        ),
-      ]
+    await insertTestCompact(
+      '123e4567-e89b-12d3-a456-426614174001',
+      '0x3000000000000000000000000000000000000000000000000000000000000001',
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000002',
+      currentTime - 3600, // Expired 1 hour ago
+      lockTagHex,
+      tokenHex,
+      expiredAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000001235'
     );
 
     // Mock GraphQL responses
@@ -533,100 +542,111 @@ describe('Deposit Balance Routes', () => {
     // Insert test compacts into database
     const db = await dbManager.getDb();
 
+    // Helper to insert a test compact using the new normalized schema
+    // Use different UUIDs for this test to avoid conflicts with the previous test
+    async function insertTestCompact(
+      compactId: string,
+      claimHash: string,
+      arbiter: string,
+      sponsor: string,
+      nonce: string,
+      expires: number,
+      lockTag: string, // 12 bytes for lock_tag
+      token: string, // 20 bytes for token
+      amount: string,
+      signature: string
+    ) {
+      // Generate unique element and commitment IDs by modifying the UUID
+      // Replace first char of last segment with 'a' for element, 'b' for commitment
+      const elementId = compactId.replace(/-(\w)(\w{11})$/, '-a$2');
+      const commitmentId = compactId.replace(/-(\w)(\w{11})$/, '-b$2');
+
+      // Insert into compacts table
+      await db.query(
+        `INSERT INTO compacts (id, chain_id, claim_hash, compact_type, sponsor, nonce, expires, signature)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          compactId,
+          chainId,
+          hexToBytes(claimHash as `0x${string}`),
+          0, // Legacy compact type
+          hexToBytes(sponsor as `0x${string}`),
+          hexToBytes(nonce as `0x${string}`),
+          expires,
+          hexToBytes(signature as `0x${string}`),
+        ]
+      );
+
+      // Insert into compact_elements table
+      await db.query(
+        `INSERT INTO compact_elements (id, compact_id, element_index, arbiter, chain_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [elementId, compactId, 0, hexToBytes(arbiter as `0x${string}`), chainId]
+      );
+
+      // Insert into compact_commitments table
+      await db.query(
+        `INSERT INTO compact_commitments (id, element_id, lock_tag, token, amount)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          commitmentId,
+          elementId,
+          hexToBytes(lockTag as `0x${string}`),
+          hexToBytes(token as `0x${string}`),
+          hexToBytes(
+            ('0x' +
+              BigInt(amount).toString(16).padStart(64, '0')) as `0x${string}`
+          ),
+        ]
+      );
+    }
+
+    // Extract lock_tag (12 bytes) and token (20 bytes) from lockId
+    // lockId is 32 bytes: upper 12 bytes = lock_tag, lower 20 bytes = token
+    const lockTagHex = lockId.slice(0, 26); // 0x + 24 hex chars = 12 bytes
+    const tokenHex = '0x' + lockId.slice(26); // remaining 40 hex chars = 20 bytes
+
+    // Use different UUIDs for this test (xxxxx5 series) to avoid conflicts with the previous test (xxxxx0-2 series)
     // 1. Insert finalized compact (already processed)
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174002',
-        chainId,
-        hexToBytes(
-          '0x1234567890123456789012345678901234567890123456789012345678901234'
-        ), // Same as finalized claim hash
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000003'
-        ),
-        currentTime + 3600, // Not expired, but finalized via claim
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(finalizedAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001236'
-        ),
-      ]
+    await insertTestCompact(
+      'a23e4567-e89b-12d3-a456-426614174005',
+      '0x1234567890123456789012345678901234567890123456789012345678901234', // Same as finalized claim hash
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000013',
+      currentTime + 3600, // Not expired, but finalized via claim
+      lockTagHex,
+      tokenHex,
+      finalizedAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000002236'
     );
 
     // 2. Insert unprocessed compact (not expired)
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174000',
-        chainId,
-        hexToBytes(
-          '0x2000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        currentTime + 3600, // Expires in 1 hour
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(unprocessedAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001234'
-        ),
-      ]
+    await insertTestCompact(
+      'a23e4567-e89b-12d3-a456-426614174003',
+      '0x4000000000000000000000000000000000000000000000000000000000000001',
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000011',
+      currentTime + 3600, // Expires in 1 hour
+      lockTagHex,
+      tokenHex,
+      unprocessedAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000002234'
     );
 
     // 3. Insert expired compact
-    await db.query(
-      `
-      INSERT INTO compacts (
-        id, chain_id, claim_hash, arbiter, sponsor, nonce, expires, lock_id, amount, signature
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-    `,
-      [
-        '123e4567-e89b-12d3-a456-426614174001',
-        chainId,
-        hexToBytes(
-          '0x3000000000000000000000000000000000000000000000000000000000000001'
-        ),
-        hexToBytes('0x1230000000000000000000000000000000000123'),
-        hexToBytes('0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'),
-        hexToBytes(
-          '0x0000000000000000000000000000000000000000000000000000000000000002'
-        ),
-        currentTime - 3600, // Expired 1 hour ago
-        hexToBytes(lockId),
-        hexToBytes(
-          ('0x' +
-            BigInt(expiredAmount)
-              .toString(16)
-              .padStart(64, '0')) as `0x${string}`
-        ),
-        hexToBytes(
-          '0x1234000000000000000000000000000000000000000000000000000000001235'
-        ),
-      ]
+    await insertTestCompact(
+      'a23e4567-e89b-12d3-a456-426614174004',
+      '0x5000000000000000000000000000000000000000000000000000000000000001',
+      '0x1230000000000000000000000000000000000123',
+      '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266',
+      '0x0000000000000000000000000000000000000000000000000000000000000012',
+      currentTime - 3600, // Expired 1 hour ago
+      lockTagHex,
+      tokenHex,
+      expiredAmount,
+      '0x1234000000000000000000000000000000000000000000000000000000002235'
     );
 
     // Mock GraphQL responses
@@ -678,7 +698,7 @@ describe('Deposit Balance Routes', () => {
             claims: {
               items: [
                 {
-                  // Add a finalized claim
+                  // Add a finalized claim (same hash as the finalized compact)
                   claimHash:
                     '0x1234567890123456789012345678901234567890123456789012345678901234',
                   amount: finalizedAmount,
